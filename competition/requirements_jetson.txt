@@ -1,0 +1,10 @@
+# Jetson Orin Nano 권장: JetPack/Python 버전에 맞는 wheel을 확인해야 합니다.
+# 기본 패키지
+numpy
+opencv-python
+PyYAML
+websocket-client
+# pyrealsense2는 Jetson에서 apt/librealsense 빌드가 필요한 경우가 많습니다.
+# onnxruntime-gpu는 JetPack/CUDA 버전에 맞는 사전빌드 wheel을 사용하세요.
+# 초기 테스트용 CPU fallback:
+onnxruntime

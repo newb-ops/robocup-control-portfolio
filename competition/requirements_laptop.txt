@@ -1,0 +1,6 @@
+numpy
+opencv-python
+PyYAML
+onnxruntime
+pyrealsense2
+websocket-client

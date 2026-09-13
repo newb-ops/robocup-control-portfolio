@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+devel/
+install/
+.catkin_tools/
+*.engine
+*.bag
+*.log
+.env
+.env.*

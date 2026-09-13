@@ -1,0 +1,26 @@
+# Jetson Orin + RealSense + ONNX(TensorRT)
+robot:
+  detector_backend: onnx
+  model_path: weights/real_best.onnx   # 대회 도메인(잔디) 재학습 모델
+  imgsz: 640
+  conf_thres: 0.40
+  img_width: 640
+  img_height: 480
+  realsense_fps: 30
+  realsense_serial: ""
+  real_position_enabled: true
+  real_depth_min: 0.08
+  real_depth_max: 10.0
+  camera_height: 1.23
+  camera_x: 0.0
+  camera_y: 0.0
+  camera_pitch_down_deg: 20.0
+  use_imu_pitch: true                 # D435i accel 사용. 실패하면 camera_pitch_down_deg manual fallback
+  use_sysfs_imu_pitch: true
+  imu_pitch_alpha: 0.15
+  imu_pitch_offset_deg: 0.0
+  imu_accel_fps: 0
+  localization_enabled: false
+  gc_enabled: false      # GameController 연동은 별도(룰)
+tuning:
+  perception_latency: 0.05
