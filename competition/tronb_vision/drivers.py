@@ -126,7 +126,7 @@ class RealStubDriver(RobotDriver):
     명령 전송과 추종 오차·가동 범위·피드백 지연·NaN 검사가 필요하다."""
     def __init__(self, cfg: RobotConfig):
         self.cfg = cfg
-        print("[RealStubDriver] ⚠ 실로봇 안전 로직 미포함. v11 driver 로 교체 필요.")
+        print("[RealStubDriver] 실로봇 안전 로직 미포함. v11 driver 로 교체 필요.")
     def send_twist(self, x, z, is_kick=False):
         pass  # TODO: TRON1 WebSocket 전송과 명령 검증
     def set_head(self, yaw, pitch):

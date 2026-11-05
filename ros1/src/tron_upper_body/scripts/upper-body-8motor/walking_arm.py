@@ -148,7 +148,7 @@ class WalkingArmsDemo:
                 return True
             if time.time() - t0 > timeout:
                 missing = [m for m in ALL_IDS if m not in got]
-                print(f"    ⚠ timeout. 응답 없는 ID: {missing}")
+                print(f"    timeout. 응답 없는 ID: {missing}")
                 return False
             rate.sleep()
         return False

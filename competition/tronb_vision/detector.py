@@ -159,7 +159,7 @@ class OnnxYoloDetector(BaseDetector):
             self._names_list = [meta_names[i] for i in sorted(meta_names)]
             self.names = dict(meta_names)
             if list(class_names) and list(class_names) != self._names_list:
-                print(f"[OnnxYoloDetector] ⚠ cfg.class_names 무시하고 onnx 내장 names 사용: {self._names_list}")
+                print(f"[OnnxYoloDetector] cfg.class_names 무시하고 onnx 내장 names 사용: {self._names_list}")
         else:
             self._names_list = list(class_names)
             self.names = {i: n for i, n in enumerate(self._names_list)}

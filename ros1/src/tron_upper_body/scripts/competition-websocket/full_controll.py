@@ -74,7 +74,7 @@ class BallFollowerDualArm_Master:
         rospy.init_node("ball_follower_master", anonymous=True)
 
         print("\n" + "="*70)
-        print("🏆 [MASTER INTEGRATED VERSION]")
+        print("[MASTER INTEGRATED VERSION]")
         print("   1. Protocol: Universal GUID & SDK Boot")
         print("   2. Logic: Predictive Blind Kick & Velocity Est.")
         print("   3. Hardware: Corrected Signs (Roll: Out--, Pitch: L+ R+)")
@@ -228,7 +228,7 @@ class BallFollowerDualArm_Master:
     def set_state(self, new_state):
         with self.lock:
             if self.state != new_state:
-                if self.DEBUG: print(f"🔄 State: {self.state} -> {new_state}")
+                if self.DEBUG: print(f"State: {self.state} -> {new_state}")
                 self.state = new_state
 
     def get_state(self):
@@ -246,12 +246,12 @@ class BallFollowerDualArm_Master:
     # WebSocket 핸들러
 
     def on_open(self, ws):
-        print(f"✅ WebSocket Connected: {self.WS_URL}")
+        print(f"WebSocket Connected: {self.WS_URL}")
         self.is_connected = True
         self.send_ws_cmd("request_enable_imu", {"enable": True})
 
-    def on_error(self, ws, error): print(f"🔥 WS Error: {error}")
-    def on_close(self, ws, c, m): print(f"❌ WS Closed: {m}"); self.is_connected = False
+    def on_error(self, ws, error): print(f"WS Error: {error}")
+    def on_close(self, ws, c, m): print(f"WS Closed: {m}"); self.is_connected = False
 
     def on_message(self, ws, msg):
         try:
@@ -261,7 +261,7 @@ class BallFollowerDualArm_Master:
 
             if 'response' in title:
                 if result != 'success' and result != '' and self.DEBUG:
-                    print(f"⚠️ Command Rejected [{title}]: {result}")
+                    print(f"Command Rejected [{title}]: {result}")
 
             elif title == 'notify_imu':
                 imu = data.get('data', {})
@@ -273,9 +273,9 @@ class BallFollowerDualArm_Master:
                 with self.lock: self.current_roll = math.radians(roll)
 
             elif title == 'notify_stand_mode':
-                if result == 'success': print("✅ Stand Mode OK"); self.stand_done_event.set()
+                if result == 'success': print("Stand Mode OK"); self.stand_done_event.set()
             elif title == 'notify_walk_mode':
-                if result == 'success': print("✅ Walk Mode OK"); self.walk_done_event.set()
+                if result == 'success': print("Walk Mode OK"); self.walk_done_event.set()
         except: pass
 
     def send_ws_cmd(self, title, data):
@@ -292,7 +292,7 @@ class BallFollowerDualArm_Master:
 
     def vision_loop(self):
         rate = rospy.Rate(30)
-        print("👁️ Vision Loop Started (Advanced Mode)")
+        print("Vision Loop Started (Advanced Mode)")
 
         while not rospy.is_shutdown():
             try:
@@ -373,14 +373,14 @@ class BallFollowerDualArm_Master:
                                 is_aligned = abs(pred_yaw) < self.BLIND_KICK_YAW_TOLERANCE
 
                                 if is_aligned:
-                                    print(f"👻 [Blind Kick] 예측 Yaw: {pred_yaw:.2f} -> KICK!")
+                                    print(f"[Blind Kick] 예측 Yaw: {pred_yaw:.2f} -> KICK!")
                                     self.kick_start_time = time.time()
                                     self.stop_confirm_count = 0
                                     self.is_blind_kick_active = True
                                     self.head_target_yaw = pred_yaw # 예측 방향 주시
                                     self.set_state("STOP")
                                 else:
-                                    print(f"⚠️ [Blind Fail] 정렬 안됨: {pred_yaw:.2f}")
+                                    print(f"[Blind Fail] 정렬 안됨: {pred_yaw:.2f}")
                                     self.set_state("SEARCH")
 
                             elif self.lost_frame_count > self.TRACK_LOSS_THRESHOLD:
@@ -397,7 +397,7 @@ class BallFollowerDualArm_Master:
                              self.set_state("SEARCH")
                 rate.sleep()
             except Exception as e:
-                print(f"🔥 비전 오류: {e}"); time.sleep(1.0)
+                print(f"비전 오류: {e}"); time.sleep(1.0)
 
 
     # 보행과 상체 제어
@@ -419,7 +419,7 @@ class BallFollowerDualArm_Master:
         if self.ENABLE_RECOVERY_ON_STARTUP:
             self.send_ws_cmd("request_recovery", {}); time.sleep(3.0)
 
-        print("🔹 기립 요청...")
+        print("기립 요청...")
         self.send_ws_cmd("request_stand_mode", {})
         while not self.stand_done_event.is_set():
              if rospy.is_shutdown(): return
@@ -432,12 +432,12 @@ class BallFollowerDualArm_Master:
             self.motor_offsets[self.HEAD_PITCH_ID] = self.motor_pos[self.HEAD_PITCH_ID]
             self.motor_offsets[self.HEAD_YAW_ID] = self.motor_pos.get(self.HEAD_YAW_ID, 0.0)
 
-        print("🔹 머리 정렬...")
+        print("머리 정렬...")
         for i in range(50):
             self.send_motor_raw(self.HEAD_PITCH_ID, self.motor_offsets[self.HEAD_PITCH_ID] + (1.5 * i/50.0), kp=20.0)
             rate.sleep()
 
-        print("🔹 보행 모드 요청...")
+        print("보행 모드 요청...")
         self.send_ws_cmd("request_walk_mode", {})
         self.walk_done_event.wait(10); self.is_robot_ready = True; self.motors_ready = True
 
@@ -447,13 +447,13 @@ class BallFollowerDualArm_Master:
 
         self.prev_roll = self.current_roll
         self.prev_roll_time = time.time()
-        start_time = time.time(); print("🤖 로봇 준비 완료! (Master Version)")
+        start_time = time.time(); print("로봇 준비 완료! (Master Version)")
         last_debug_time = time.time()
 
         while not rospy.is_shutdown():
             if time.time() - last_debug_time > 3.0:
                 bs = self.ball_estimator.get_speed()
-                print(f"⚡ {self.state} | 공속도: {bs:.1f} | Roll: {self.current_roll:.2f}")
+                print(f"{self.state} | 공속도: {bs:.1f} | Roll: {self.current_roll:.2f}")
                 last_debug_time = time.time()
             if not self.is_robot_ready: rate.sleep(); continue
 
@@ -499,7 +499,7 @@ class BallFollowerDualArm_Master:
                 cvx = self.MAX_VX["KICK"]
                 if abs(self.current_roll) > self.ROLL_WARNING_LIMIT: cvx = 0.0
                 if abs(self.current_roll) > self.ROLL_FALL_LIMIT:
-                    print("🚨 넘어짐 감지!"); self.recover_start_time = time.time(); self.set_state("RECOVER")
+                    print("넘어짐 감지!"); self.recover_start_time = time.time(); self.set_state("RECOVER")
                 elif time.time() - self.kick_start_time > 0.5:
                     self.cooldown_start_time = time.time(); self.set_state("COOLDOWN")
 
@@ -591,4 +591,4 @@ if __name__ == "__main__":
         BallFollowerDualArm_Master()
         rospy.spin()
     except rospy.ROSInterruptException: pass
-    except KeyboardInterrupt: print("\n👋 프로그램 종료")
+    except KeyboardInterrupt: print("\n프로그램 종료")
