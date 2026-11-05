@@ -27,7 +27,7 @@ except ImportError:
     class MotorFeedback: pass
 
 
-# [Advanced] 공 속도 추정기 (삭제되었던 부분 복구됨)
+# 공 속도 추정과 위치 예측
 
 class BallVelocityEstimator:
     """EMA 필터를 사용한 공 속도 추정 및 위치 예측"""
@@ -68,7 +68,6 @@ class BallVelocityEstimator:
         self.velocity_y = 0.0
 
 
-# [Master] 메인 클래스
 
 class BallFollowerDualArm_Master:
     def __init__(self):
@@ -82,13 +81,13 @@ class BallFollowerDualArm_Master:
         print("="*70 + "\n")
 
 
-        # [설정 1] 통신 프로토콜
+        # 통신 설정
 
         self.USE_DASHES_IN_GUID = False  # True: 대시 포함, False: 대시 제거(SDK)
         self.ENABLE_RECOVERY_ON_STARTUP = False # SDK는 기본적으로 False
 
 
-        # [설정 2] 시스템 및 경로
+        # 장치와 경로
 
         self.DEBUG = True
         self.ROBOT_SN = "PF_TRON1A_001"
@@ -96,7 +95,7 @@ class BallFollowerDualArm_Master:
         self.model_path = "weights/best.pt"
 
 
-        # [설정 3] 모터 ID (하드웨어 변경 반영)
+        # 모터 ID
 
         self.HEAD_YAW_ID = 5; self.HEAD_PITCH_ID = 6
         self.L_ROLL_ID = 1; self.L_PITCH_ID = 3
@@ -107,22 +106,22 @@ class BallFollowerDualArm_Master:
         self.ALL_MOTOR_IDS = self.ARM_IDS + self.HEAD_IDS
 
 
-        # [설정 4] 튜닝 파라미터 (Advanced)
+        # 제어 파라미터
 
         # Vision
         self.CONF_THRESHOLD = 0.75
         self.MIN_BALL_AREA = 500
-        self.DETECT_CONFIRM_FRAMES = 2  # 반응 속도 향상
+        self.DETECT_CONFIRM_FRAMES = 2
         self.BALL_AREA_THRESHOLD = 6000
 
         # Blind Kick
         self.BLIND_KICK_PITCH = -0.35
         self.BLIND_KICK_AREA = 4000
         self.BLIND_KICK_YAW_TOLERANCE = 0.20
-        self.BLIND_KICK_WAIT = 0.15     # 빠른 킥
+        self.BLIND_KICK_WAIT = 0.15
         self.NORMAL_KICK_WAIT = 0.8
 
-        # Smart Strategy
+        # 이동하는 공의 접근 속도
         self.MOVING_BALL_THRESHOLD = 30.0
         self.APPROACH_SPEED_SLOW = 0.08
         self.APPROACH_SPEED_FAST = 0.12
@@ -138,7 +137,6 @@ class BallFollowerDualArm_Master:
         self.TRACK_LOSS_THRESHOLD = 15
 
 
-        # [설정 5] 제어 변수 초기화
 
         self.motor_pos = {}; self.motor_offsets = {}; self.motors_ready = False
         self.head_target_yaw = 0.0; self.head_target_pitch = 0.0
@@ -157,7 +155,6 @@ class BallFollowerDualArm_Master:
         self.detect_confirm_count = 0
         self.stop_confirm_limit = 3
 
-        # Advanced Objects
         self.ball_estimator = BallVelocityEstimator(history_size=5, alpha=0.3)
         self.last_detection_time = 0.0
 
@@ -189,7 +186,6 @@ class BallFollowerDualArm_Master:
             "STOP": 20.0, "KICK": 15.0, "COOLDOWN": 15.0, "RECOVER": 20.0
         }
 
-        # System
         self.lock = threading.Lock()
         self.img_lock = threading.Lock()
         self.bridge = CvBridge()
@@ -212,7 +208,6 @@ class BallFollowerDualArm_Master:
         rospy.Subscriber('/upper_body/feedback', MotorFeedback, self.feedback_callback)
         rospy.Subscriber("/camera/color/image_raw", Image, self.rgb_callback, queue_size=1)
 
-        # Thread Start
         self.ws = websocket.WebSocketApp(
             self.WS_URL, on_open=self.on_open, on_message=self.on_message,
             on_error=self.on_error, on_close=self.on_close
@@ -248,7 +243,7 @@ class BallFollowerDualArm_Master:
         except: pass
 
 
-    # WebSocket 핸들러 (Universal)
+    # WebSocket 핸들러
 
     def on_open(self, ws):
         print(f"✅ WebSocket Connected: {self.WS_URL}")
@@ -293,7 +288,7 @@ class BallFollowerDualArm_Master:
             self.ws.send(json.dumps(msg))
 
 
-    # 비전 루프 (Advanced: 예측 적용)
+    # 공 검출과 추적
 
     def vision_loop(self):
         rate = rospy.Rate(30)
@@ -310,7 +305,6 @@ class BallFollowerDualArm_Master:
                     if self.new_frame_available:
                         frame = self.latest_rgb_img.copy(); self.new_frame_available = False
 
-                # 프레임 없을 때 스캔
                 if frame is None:
                     if curr == "SEARCH":
                         with self.lock:
@@ -319,7 +313,6 @@ class BallFollowerDualArm_Master:
                             self.head_target_pitch = -0.2 + (0.15 * math.sin(2 * self.scan_timer))
                     rate.sleep(); continue
 
-                # YOLO 추론
                 results = self.model.predict(frame, conf=self.CONF_THRESHOLD, verbose=False)
 
                 raw_det = False; temp_area = 0.0; temp_x = 0.0; temp_y = 0.0
@@ -348,7 +341,6 @@ class BallFollowerDualArm_Master:
                         self.lost_frame_count = 0
                         self.last_detection_time = time.time()
 
-                        # 속도 추정 업데이트
                         self.ball_estimator.update(temp_x, temp_y, time.time())
 
                         self.head_target_yaw += np.clip(err_x, -100, 100) * self.HEAD_GAIN_X
@@ -372,7 +364,7 @@ class BallFollowerDualArm_Master:
                                        (self.last_known_area > self.BLIND_KICK_AREA)
 
                             if is_blind:
-                                # [Advanced] 위치 예측
+                                # 위치 예측
                                 px, py = self.ball_estimator.predict_position(
                                     self.last_known_x, self.last_known_y, time_since_last)
 
@@ -408,7 +400,7 @@ class BallFollowerDualArm_Master:
                 print(f"🔥 비전 오류: {e}"); time.sleep(1.0)
 
 
-    # 제어 루프 (Hardware Signs Corrected)
+    # 보행과 상체 제어
 
     def control_loop(self):
         rate = rospy.Rate(50)
@@ -472,7 +464,6 @@ class BallFollowerDualArm_Master:
             cvx, cwz = 0.0, 0.0
             kp = self.KP_TABLE.get(curr, 15.0)
 
-            # State Machine (Advanced)
             if curr == "SEARCH":
                 cwz = 0.15; self.stop_confirm_count = 0; self.is_blind_kick_active = False
 
@@ -527,7 +518,7 @@ class BallFollowerDualArm_Master:
             self.send_motor_offset(self.HEAD_YAW_ID, yaw, kp=20.0)
             self.send_motor_offset(self.HEAD_PITCH_ID, pitch, kp=20.0)
 
-            # [ZMP & Arm Control - Corrected]
+            # 몸체 기울기에 따른 팔 보상
             now = time.time(); dt = max(now - self.prev_roll_time, 1e-3)
             raw_rate = (self.current_roll - self.prev_roll) / dt
             self.filtered_roll_rate = (0.2 * raw_rate) + (0.8 * self.filtered_roll_rate)

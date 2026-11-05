@@ -11,7 +11,7 @@ import threading
 from collections import deque
 from tron_upper_body.msg import MotorCommand, MotorFeedback
 
-# 모터 ID / 부호 (네 매핑)
+# 이 시험 구성의 모터 ID와 장착 방향
 ID_R_SHO_R = 1   # 오 어깨 roll,  밖 +
 ID_L_SHO_R = 2   # 왼 어깨 roll,  밖
 ID_L_SHO_P = 3   # 왼 어깨 pitch, 앞 +
@@ -31,31 +31,29 @@ ID_NAME = {
 
 # 걷기 swing
 LOOP_HZ        = 50
-SWING_FREQ     = 0.7    # Hz, 팔 흔들기 템포 (사람 ~0.5-1Hz)
+SWING_FREQ     = 0.7    # Hz
 SWING_AMP_BASE = 0.08   # rad, 멈춰도 남는 최소 흔들림
-SWING_AMP_GAIN = 0.20   # gait=1 일 때 추가 진폭 (충돌 확인 후 ↑, 0.35까지)
-ARM_BASE_OUT   = 0.10   # 어깨 살짝 벌림(roll). 충돌나면 ↓
+SWING_AMP_GAIN = 0.20   # rad, gait=1일 때 추가 진폭. 늘리기 전에 관절 간섭을 확인한다.
+ARM_BASE_OUT   = 0.10   # rad, 어깨 바깥쪽 roll. 간섭이 있으면 줄인다.
 
-# 팔꿈치 secondary (overlapping action)
-ELBOW_BASE_BEND = 0.30  # rad, 기본 굽힘(~17도). 자연스러우면 0.4까지 ↑
+# 어깨 움직임을 지연해 따라가는 팔꿈치
+ELBOW_BASE_BEND = 0.30  # rad, 기본 굽힘 (약 17도)
 ELBOW_FOLLOW    = 0.40  # 어깨 swing 추종 비율
-ELBOW_DELAY     = 0.12  # s, 한 박자 늦게 (0.1~0.15 사이 취향)
+ELBOW_DELAY     = 0.12  # s, 어깨 대비 지연 시간
 
-# 관절 compliance 설정
-# kp 낮을수록 흐물. 너무 낮추면 중력에 처진다. 처지면 다시 ↑.
+# 관절 게인. Kp가 너무 낮으면 중력 부하로 처질 수 있다.
 SHOULDER_KP = 12.0
 ELBOW_KP    = 8.0
 NECK_KP     = 12.0
 KD          = 0.8
 
-# gait 시뮬 (통합 시 실제 정규화 속도로 교체)
-# 데모에서 0→1→0 천천히 변조 → "속도 느려지면 팔도 작아짐" 시연
+# 데모에서는 gait를 0~1로 바꿔 팔 진폭을 조절한다. 실기 통합 시 속도 입력이 필요하다.
 DEMO_GAIT  = True
 GAIT_CYCLE = 12.0   # s, 한 번 느려졌다 빨라지는 주기
 
 # 안전
 RATE_LIMIT      = 0.04   # rad/step, 궤적 속도 제한
-MAX_FOLLOW_ERR  = 0.40   # |지령-실제| 넘으면 명령 전진 멈춤. compliant라 넉넉히
+MAX_FOLLOW_ERR  = 0.40   # rad, 지령과 실제 위치의 차이가 이 값을 넘으면 궤적 진행 중단
 EMERGENCY_POS   = math.radians(110)  # start 기준 이만큼 벗어나면 E-STOP
 EMERGENCY_VEL   = 4.0    # rad/s
 FB_TIMEOUT      = 1.0
@@ -111,7 +109,7 @@ class WalkingArmsDemo:
         diff = target_abs - prev
         safe = prev + math.copysign(RATE_LIMIT, diff) if abs(diff) > RATE_LIMIT else target_abs
 
-        # 2) follow-error 게이팅 (잼/런어웨이면 명령 전진 멈춤)
+        # 추종 오차가 크면 목표를 더 진행시키지 않는다.
         if abs(safe - actual) > MAX_FOLLOW_ERR:
             safe = prev
 
@@ -273,7 +271,7 @@ class WalkingArmsDemo:
                     base_kp = ELBOW_KP if mid in (ID_L_ELB, ID_R_ELB) else SHOULDER_KP
                     self._send_raw(mid, final[mid], kp=base_kp * ratio)
             rate.sleep()
-        # 토크 해제
+        # Kp와 Kd를 모두 0으로 내려 해제한다.
         for _ in range(30):
             with self.lock:
                 for mid in ALL_IDS:

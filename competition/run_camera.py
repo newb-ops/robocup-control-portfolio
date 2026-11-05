@@ -41,7 +41,7 @@ def main():
         cfg.external_control = True
         cfg.control_log_path = args.control_log
     from tronb_vision.common import check_model_and_backend
-    check_model_and_backend(cfg, "realsense")   # 파일 존재 + sim/real 경고 + .pt 자동백엔드
+    check_model_and_backend(cfg, "realsense")
     print(
         f"[run_camera] device={args.device} config={config_path} "
         f"backend={cfg.detector_backend} model={cfg.model_path}"
@@ -76,7 +76,7 @@ def main():
         bf.run_threaded(control_hz=args.control_hz)
         return 0
 
-    # 미리보기 + 핫키 (메인스레드). vision/control 은 백그라운드.
+    # OpenCV 창과 키 입력은 메인 스레드에서 처리한다.
     import cv2
     bf.start_threads(control_hz=args.control_hz)
     win = "TRON1 Vision v10.3 (camera)"
@@ -90,7 +90,7 @@ def main():
             if view is not None:
                 cv2.imshow(win, draw_overlay(view, bf, ui["toast"], ui["show_help"]))
             topview.update(bf)               # localization/landmark_comp 켜졌을 때만
-            key = cv2.waitKey(15) & 0xFF     # 메인스레드 — 추론에 안 막힘
+            key = cv2.waitKey(15) & 0xFF
             ui = handle_key(bf, key, ui, allow_manual_drive=False)  # 실카메라는 수동주행 비활성
             if cv2.getWindowProperty(win, cv2.WND_PROP_VISIBLE) < 1:
                 break

@@ -13,7 +13,7 @@ import signal
 from tron_upper_body.msg import MotorCommand, MotorFeedback
 
 
-# 기본값 — 전체 8개. 부분 테스트면 이 줄만 수정
+# 응답을 확인할 모터 ID
 
 ALL_IDS = [1, 2, 3, 4, 5, 6, 7, 8]
 
@@ -46,7 +46,7 @@ class Phase1Ping:
             self.initial_pos[msg.id] = msg.position
 
     def _ping(self, mid):
-        """Kp=0, Kd=0.1 으로 토크 풀기 (약한 댐핑만)."""
+        """위치 제어를 끄고 Kd=0.1의 감쇠만 인가한다."""
         cmd = MotorCommand()
         cmd.id = mid
         cmd.p_des = 0.0

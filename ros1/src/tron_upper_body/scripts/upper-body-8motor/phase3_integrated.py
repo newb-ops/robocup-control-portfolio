@@ -35,7 +35,7 @@ POS_LIMIT = {
 }
 RUNAWAY_ERR = {mid: lim * 1.6 for mid, lim in POS_LIMIT.items()}
 
-# 최종 hold gain (Kp, Kd) — upper_motor_test 의 Kp=15 패턴 참고
+# hold 게인 (Kp, Kd)
 HOLD_GAINS = {
     1: (15.0, 1.0), 2: (15.0, 1.0),
     3: (15.0, 1.0), 4: (15.0, 1.0),
@@ -43,7 +43,7 @@ HOLD_GAINS = {
     7: (12.0, 1.5), 8: (12.0, 1.5),
 }
 
-# 동작 파라미터 — set_zero.py 의 LIFT_ANGLE=1.5 적용
+# 목 들어 올리기 파라미터
 HEAD_LIFT      = 1.5      # 엎드린 자세에서 정면까지
 LIFT_TIME      = 2.0      # 부드럽게 들어올리는 시간
 ARRIVAL_TOL    = 0.1      # lift 도착 판정 (rad, 약 5°)
@@ -135,7 +135,7 @@ class Phase3Integrated:
         return False
 
     def initial_hold(self):
-        """캘리브 전 현재 자세에서 흔들림 진정 — upper_motor_test 패턴."""
+        """영점 설정 전에 현재 자세를 유지해 흔들림을 줄인다."""
         print("[Step 2] 초기 hold (1초) — 흔들림 진정")
         rate = rospy.Rate(50)
         # 현재 위치를 임시로 잡고 hold
@@ -156,10 +156,7 @@ class Phase3Integrated:
                 print(f"         ID {mid} {ID_NAME[mid]:8s} = {self.start_pos[mid]:+.4f}")
 
     def lift_head(self):
-        """
-        ID 6 을 HEAD_LIFT 만큼 들어올림.
-        set_zero.py 패턴: 궤적 생성 후 실제 도착 확인까지.
-        """
+        """ID 6을 HEAD_LIFT만큼 움직이고 피드백으로 도착을 확인한다."""
         print(f"[Step 4] 목 lift +{HEAD_LIFT:.2f} rad ({LIFT_TIME}s)")
         steps = int(LIFT_TIME * 50)
         rate = rospy.Rate(50)
@@ -287,7 +284,7 @@ class Phase3Integrated:
                 self._send(mid, self.start_pos[mid], kp=kp * ratio, kd=kd)
             rate.sleep()
 
-        # 완전 해제 — Kd 댐핑만 살짝
+        # 위치 제어 해제. Kd 감쇠는 유지한다.
         for _ in range(30):
             for mid in ALL_IDS:
                 self._send(mid, 0.0, kp=0.0, kd=0.1)

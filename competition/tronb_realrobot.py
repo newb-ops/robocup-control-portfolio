@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ROS 카메라 영상의 YOLO 검출과 TRON1 IMU로 공·골대 관측 및 위치 추정값을 만든다.
-RealRobotBrain이 관측과 선택적 GameController·setplay 입력으로 상태를 결정하고 WebSocket 보행 명령과 ROS 상체 모터 명령을 출력한다.
-비전과 제어는 별도 스레드로 실행하며 피드백, watchdog, 자세 한계를 감시한다.
-실기 실행 전 모터 매핑, 카메라 보정값, 검출 클래스와 depth 스케일을 확인해야 하며 ROS 통합 실행은 별도 검증이 필요하다."""
+"""YOLO 관측과 RealRobotBrain으로 TRON1 보행·상체 명령을 만든다.
+
+비전과 제어는 별도 스레드로 실행한다. 실기 실행 전 모터 매핑, 카메라 보정값,
+검출 클래스와 depth 스케일을 확인해야 한다. ROS 통합 실행은 별도 검증이 필요하다.
+"""
 
 import rospy
 import cv2
@@ -41,17 +42,16 @@ except ImportError:
     class MotorCommand: pass
     class MotorFeedback: pass
 
-# 선택적 위치 추정 입력은 std_msgs/String의 JSON 형식이다.
+# 외부 위치 추정값은 std_msgs/String에 담긴 JSON으로 받는다.
 try:
     from std_msgs.msg import String as RosString
 except ImportError:
     RosString = None
 
 
-# Vision은 데이터만 쓰고, Control이 상태 전이를 결정
 @dataclass
 class BallObservation:
-    """Vision loop에서 한 번에 쓰고, Control loop에서 한 번에 읽는 단위"""
+    """비전과 제어 스레드가 공유하는 한 프레임의 공 관측."""
     area: float = 0.0
     dist: float = 9.99
     dist_from_area: float = 9.99
@@ -64,10 +64,9 @@ class BallObservation:
 
     detected: bool = False
     consecutive_detect: int = 0
-    kalman_accepted: bool = False         # 칼만 필터가 이번 관측 수용했는지
+    kalman_accepted: bool = False
 
-    # 프레임 동기화
-    frame_id: int = 0                     # Vision이 쓸 때마다 증가, Control이 중복 처리 방지
+    frame_id: int = 0                     # 비전에서 증가시키며 제어 루프의 중복 처리를 막는다.
 
 
 class RobotState(Enum):
@@ -98,14 +97,14 @@ class TuningParams:
     aim_settle_time: float = 0.25       # 진입 직후 안정화 (초)
     aim_glance_time: float = 1.2        # 골대 기억 없을 때만 고개 들어 스캔하는 최대 시간 (초)
     aim_timeout: float = 2.5            # 제한 시간 뒤에는 정렬 여부와 관계없이 킥
-    aim_look_pitch: float = 0.2        # 글랜스 시 head pitch (rad)
+    aim_look_pitch: float = 0.2        # 골대 스캔 시 head pitch (rad)
 
     # 지연 보상 조기 정지 (공이 발밑 오기 전에 멈춤)
     perception_latency: float = 0.15    # 비전 파이프라인 지연(초), 실측값으로 조정
     stop_dist: float = 0.50             # 보상 거리가 이 값 이하면 AIM 진입 (m)
     stop_confirm_frames: int = 2        # AIM 확정 프레임 수
 
-    # 곡선 주행 (공 근처에서 골대쪽으로 미리 휘어 접근 → AIM 회전량 최소화)
+    # 골대 방향으로 휘어 접근해 AIM에서 필요한 회전을 줄인다.
     curved_approach_enabled: bool = True
     curved_approach_dist: float = 0.6
     curved_approach_gain: float = 0.15
@@ -115,11 +114,11 @@ class TuningParams:
     ball_max_area: int = 90000
     lost_frames_threshold: int = 35
 
-    # 골대 기억 (IMU world-angle 기반)
+    # IMU의 세계 좌표계 yaw로 골대 방향을 기억한다.
     goal_memory_decay: float = 0.02     # 초당 신뢰도 감소
     goal_memory_timeout: float = 30.0   # 기억 유효 시간 (초)
     goal_conf_threshold: float = 0.25
-    goal_yaw_rate_decay: float = 0.4    # yaw 회전량당 추가 decay
+    goal_yaw_rate_decay: float = 0.4    # yaw 회전량당 신뢰도 감소
 
     approach_speed_far: float = 0.060
     approach_speed_near: float = 0.025
@@ -148,26 +147,26 @@ class TuningParams:
         print("="*46 + "\n")
 
 
-# 공 칼만 필터 (Adaptive Q + Mahalanobis Gating)
+# 속도에 따른 Q 조정과 Mahalanobis 관측 필터링
 class BallKalmanFilter:
     def __init__(self):
         self.x = np.zeros(4)       # [px, py, vx, vy]
         self.P = np.eye(4) * 100
         self.Q_base = np.diag([1.0, 1.0, 5.0, 5.0])
         self.R_default = np.diag([10.0, 10.0])
-        self.R_area_only = np.diag([25.0, 25.0])  # area 기반 추정 시 더 높은 불확실성
+        self.R_area_only = np.diag([25.0, 25.0])  # 면적으로 거리를 추정할 때는 관측 오차를 크게 둔다.
         self.F = np.eye(4)
         self.H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]])
         self.last_update = time.time()
         self.initialized = False
-        # Mahalanobis gate (chi-squared, 2 DOF, 99.9% → 13.82, 실전 여유 → 16.0)
-        # 상대 로봇 킥 등 급격한 공 이동에도 tracking 유지
+        # 2자유도 chi-squared의 99.9% 임계값 13.82에 여유를 둔다.
+        # 킥 직후 급격한 공 이동을 걸러내지 않기 위한 여유다.
         self.mahalanobis_gate = 16.0
         self.consecutive_reject = 0
         self.max_consecutive_reject = 5
 
     def _get_adaptive_Q(self, dt: float) -> np.ndarray:
-        """공 속도에 따라 프로세스 노이즈 조정"""
+        """공이 빠르게 움직일수록 프로세스 노이즈를 크게 잡는다."""
         speed = math.sqrt(self.x[2]**2 + self.x[3]**2)
         speed_factor = 1.0 + min(speed / 50.0, 5.0)
         Q = self.Q_base.copy()
@@ -187,10 +186,9 @@ class BallKalmanFilter:
         return self.x[:2]
 
     def update(self, z: np.ndarray, use_depth: bool = True):
-        """
-        z: [px, py] measurement
-        use_depth: depth 카메라로 거리 확인된 경우 True, area 추정만이면 False
-        Returns: True if measurement accepted, False if rejected by gate
+        """[px, py] 관측을 반영하고, 관측을 거부하면 False를 반환한다.
+
+        use_depth=False이면 면적 기반 거리 추정에 맞춰 관측 오차를 크게 둔다.
         """
         if not self.initialized:
             self.x[:2] = z
@@ -206,7 +204,7 @@ class BallKalmanFilter:
         y = z - self.H @ self.x
         S = self.H @ self.P @ self.H.T + R
 
-        # Mahalanobis distance (NIS: Normalized Innovation Squared)
+        # NIS(Normalized Innovation Squared)로 관측을 걸러낸다.
         # NIS = y^T * S^-1 * y  (2 DOF chi-squared 분포)
         try:
             S_inv = np.linalg.inv(S)
@@ -241,14 +239,14 @@ class BallKalmanFilter:
         return self.x[0], self.x[1]
 
     def get_velocity(self) -> Tuple[float, float]:
-        """velocity vector (blind approach에서 사용)"""
+        """공 속도 벡터(px/s). 미검출 상태의 접근 예측에 사용한다."""
         return self.x[2], self.x[3]
 
     def get_predicted_position(self, dt: float) -> Tuple[float, float]:
         return self.x[0] + self.x[2] * dt, self.x[1] + self.x[3] * dt
 
     def get_speed(self) -> float:
-        """pixel/s 단위 공 속도"""
+        """공의 속력(px/s)."""
         return math.sqrt(self.x[2]**2 + self.x[3]**2)
 
     def reset(self):
@@ -258,7 +256,7 @@ class BallKalmanFilter:
         self.consecutive_reject = 0
 
 
-# IMU 기반 골대 기억 (Yaw-rate decay)
+# 관측 이후의 회전량에 따라 골대 방향의 신뢰도를 낮춘다.
 class GoalMemory:
     def __init__(self, tuning: TuningParams):
         self.tuning = tuning
@@ -292,10 +290,7 @@ class GoalMemory:
         self._accumulated_yaw_delta = 0.0
 
     def update_confidence_decay(self, current_imu_yaw: float = None):
-        """
-        시간 기반 decay + IMU yaw 변화량 비례 decay
-        로봇이 많이 회전할수록 골대 위치에 대한 확신이 빠르게 줄어듦
-        """
+        """경과 시간과 누적 yaw 변화량에 따라 골대 기억의 신뢰도를 낮춘다."""
         if not self.initialized:
             return
 
@@ -305,7 +300,7 @@ class GoalMemory:
         yaw_decay = 0.0
         if current_imu_yaw is not None:
             yaw_delta = abs(current_imu_yaw - self._prev_imu_yaw)
-            # wrap-around 처리
+            # ±pi 경계를 넘은 회전량 보정
             if yaw_delta > math.pi:
                 yaw_delta = 2 * math.pi - yaw_delta
             self._accumulated_yaw_delta += yaw_delta
@@ -393,7 +388,7 @@ class AdaptiveHeadController:
         self.filtered_yaw = 0.0
         self.filtered_pitch = 0.0
         self.approach_mode = False
-        self.search_mode = False           # SEARCH용 모드
+        self.search_mode = False
         self.approach_smoothing = 0.25
         self.search_smoothing = 0.4        # SEARCH에서는 단일 EMA로 추종 지연을 줄인다.
 
@@ -420,7 +415,6 @@ class AdaptiveHeadController:
 
     def get_command(self) -> Tuple[float, float]:
         if self.search_mode:
-            # 단일 EMA로 목표를 추종한다.
             alpha = self.search_smoothing
             self.current_yaw = alpha * self.target_yaw + (1 - alpha) * self.current_yaw
             self.current_pitch = alpha * self.target_pitch + (1 - alpha) * self.current_pitch
@@ -563,7 +557,6 @@ class RobotConfig:
     approach_pitch_dist_far: float = 1.5
     approach_pitch_dist_near: float = 0.4
 
-    # 몸 회전
     body_turn_deadzone: float = 0.03
     body_turn_gain: float = 0.90
     body_turn_inverted: bool = False
@@ -591,7 +584,7 @@ class RobotConfig:
     lost_ball_turn_speed: float = 0.08
     lost_ball_search_frames: int = 15
 
-    # 킥 (기본값, 튜닝파람으로 override됨)
+    # 킥 판정과 동작 시간
     kick_area_very_close: int = 55000
     kick_dist_strict: float = 0.25
     kick_align_threshold: float = 0.15
@@ -600,7 +593,6 @@ class RobotConfig:
     blind_kick_wait: float = 0.1
     normal_kick_wait: float = 0.25
 
-    # 골대
     goal_conf_weak: float = 0.15
     goal_min_area: int = 300
     goal_align_max_time: float = 3.0
@@ -629,13 +621,13 @@ class RobotConfig:
     control_timeout: float = 1.0
     ws_reconnect_interval: float = 3.0
 
-    motor_fb_timeout: float = 0.50        # 이 시간(s) 넘게 모터 피드백 없으면 해당 관절 compliant.
+    motor_fb_timeout: float = 0.50        # 피드백이 이 시간(s) 동안 없으면 해당 관절의 Kp를 낮춘다.
                                           # 실측 피드백 주기와 최대 지연을 기준으로 조정한다.
-    follow_err_limit: float = 0.70        # |지령-실제|(rad) 넘으면 잼/런어웨이로 보고 토크 백오프.
+    follow_err_limit: float = 0.70        # 지령과 실제 위치의 차이(rad)가 이 값을 넘으면 Kp를 낮춘다.
                                           # 자유 스윙과 킥 동작이 오검출되지 않도록 실기에서 확인한다.
-    follow_err_kp_backoff: float = 2.0    # 트립/스테일/정지 시 낮출 kp (토크 완화)
+    follow_err_kp_backoff: float = 2.0    # 피드백 지연·추종 오차·정지 시 적용할 Kp
     pitch_fall_limit: float = 0.40        # 전/후 기울기 fall 한계 (rad). roll_fall_limit과 함께 사용
-    # 관절별 offset-상대 지령 절대한계 (오프셋이 틀려도 gross runaway 차단)
+    # 오프셋이 잘못 잡힌 경우에 대비한 상대 지령 한계
     rel_limit_head_yaw: float = 0.70
     rel_limit_head_pitch: float = 0.90
     rel_limit_arm_roll: float = 0.50
@@ -643,8 +635,8 @@ class RobotConfig:
 
     # 외부 위치 추정 입력 (기본 비활성)
     localization_enabled: bool = False
-    localization_pose_topic: str = "/localization/pose"   # vision 노드가 JSON publish
-    localization_odom_topic: str = "/localization/odom"   # behavior -> localization predict 입력
+    localization_pose_topic: str = "/localization/pose"   # 비전 노드가 발행하는 JSON pose
+    localization_odom_topic: str = "/localization/odom"   # 명령 속도와 IMU를 이용한 위치 추정 입력
     localization_pose_max_age: float = 0.50               # 이보다 오래된 pose는 무시
     attack_positive_x: bool = True        # 공격 골대 방향 (전반/후반 교대 시 토글)
 
@@ -718,14 +710,14 @@ class Watchdog:
         self.last_feed = time.time()
         self.lock = threading.Lock()
         self.running = True
-        self.armed = False  # 부팅 완료 전에는 모니터링 안 함
-        self.on_timeout = on_timeout   # stuck 시 호출 (SAFE STOP)
-        self.tripped = False           # 중복 콜백 방지
+        self.armed = False
+        self.on_timeout = on_timeout
+        self.tripped = False
         threading.Thread(target=self._monitor, daemon=True).start()
     def feed(self):
         with self.lock: self.last_feed = time.time()
     def arm(self):
-        """부팅 완료 후 호출 — 이때부터 stuck 감시 시작"""
+        """부팅 완료 후 호출해 루프 정지 감시를 시작한다."""
         with self.lock:
             self.armed = True
             self.last_feed = time.time()
@@ -774,10 +766,10 @@ class LocalizationClient:
                 self.goal_dir = float(d.get("goal_dir", 0.0))
                 self.stamp = time.time()
         except Exception:
-            pass  # 잘못된 패킷은 조용히 무시 (폴백 동작)
+            pass  # 잘못된 패킷은 무시하고 이전 관측의 유효 시간을 유지한다.
 
     def goal_direction(self):
-        """신뢰 가능 & 신선하면 로봇기준 골대 각(rad), 아니면 None."""
+        """trust와 max_age를 만족하면 로봇 기준 골대 각(rad), 아니면 None."""
         if not self.enabled:
             return None
         with self.lock:
@@ -810,13 +802,13 @@ class BallFollower:
 
         self.motor_lock = threading.Lock()
         self.motor_pos = {}
-        self.motor_vel = {}            # follow-error/속도 감시용
-        self.motor_fb_time = {}        # 관절별 마지막 피드백 시각 (신선도 게이팅)
+        self.motor_vel = {}
+        self.motor_fb_time = {}        # 관절별 피드백 타임아웃 기준
         self.motor_offsets = {}
         self.prev_arm_cmd = {}
         self.motors_ready = False
         self.vision_ready = False
-        self._safe_stop_active = False  # watchdog/예외/종료 시 latch
+        self._safe_stop_active = False  # 정지 후에는 재시작 전까지 해제하지 않는다.
 
         self.ball_kalman = BallKalmanFilter()
         self.head_stabilizer = HeadStabilizer(self.cfg.imu_compensation_gain)
@@ -834,7 +826,7 @@ class BallFollower:
         self.filtered_roll_rate = 0.0
 
         self.scan_timer = 0.0
-        self.search_body_timer = 0.0    # body 좌우 회전용 타이머
+        self.search_body_timer = 0.0
         self.stop_confirm_count = 0
         self.track_frames = 0
         self.lost_frames = 0
@@ -842,18 +834,18 @@ class BallFollower:
 
         self.aim_start_time = 0.0
         self.kick_start_time = 0.0
-        self.kick_settling = False          # 킥 전 안정화 중
+        self.kick_settling = False
         self.kick_settle_start = 0.0
 
         self.ball_tracker = BallTracker(self.cfg.detection_buffer_size)
 
-        # Atomic observation (vision→control 데이터 전달)
+        # 비전과 제어 스레드가 같은 관측 묶음을 공유한다.
         self._ball_obs = BallObservation()
         self._obs_lock = threading.Lock()
-        self._vision_frame_counter = 0     # Vision이 obs 갱신할 때마다 증가
-        self._last_processed_frame = -1    # Control이 마지막으로 처리한 frame_id
+        self._vision_frame_counter = 0     # 비전에서 관측을 갱신할 때 증가
+        self._last_processed_frame = -1    # 제어 루프가 마지막으로 처리한 frame_id
 
-        # 개별 변수 유지 (하위 호환, 내부 로직용)
+        # 기존 머리 제어 코드가 참조하는 관측값
         self.ball_area = 0.0
         self.ball_dist = 9.99
         self.ball_dist_from_area = 9.99
@@ -893,7 +885,7 @@ class BallFollower:
             pitch_down_deg=float(getattr(self.cfg, "cam_pitch_down_deg", 0.0)),
             camera_x=float(getattr(self.cfg, "cam_x_m", 0.0)),
             camera_y=float(getattr(self.cfg, "cam_y_m", 0.0)))
-        # YOLO class id↔name (ultralytics 모델 메타) → 랜드마크 타입 매핑에 사용
+        # 모델의 클래스 이름으로 랜드마크 종류를 매핑한다.
         names = getattr(self.model, "names", {}) or {}
         self.tronb_realpos = RealPositionEstimator(self.cfg, names=names)
         self.tronb_realpos.geometry = geom
@@ -944,7 +936,7 @@ class BallFollower:
         self.vision_wd = Watchdog(self.cfg.vision_timeout, "Vision", on_timeout=self._on_watchdog)
         self.control_wd = Watchdog(self.cfg.control_timeout, "Control", on_timeout=self._on_watchdog)
 
-        # 비전 통합 (기본 OFF)
+        # 외부 위치 추정 구독 (기본 비활성)
         self.loc_client = LocalizationClient(
             topic=self.cfg.localization_pose_topic,
             enabled=self.cfg.localization_enabled,
@@ -973,8 +965,7 @@ class BallFollower:
         snap = self.get_motor_snapshot()
         with self.lock:
             for mid in motor_ids:
-                # 피드백 없는 관절의 영점을 0으로 추정하지 않는다.
-                # 보정 영점과 하드웨어 영점이 어긋날 수 있으므로 해당 관절은 건너뛴다.
+                # 피드백이 없으면 하드웨어 영점을 알 수 없으므로 보정을 건너뛴다.
                 if mid not in snap:
                     print(f"[sync_offsets] WARN id {mid} 피드백 없음 -> 오프셋 설정 보류")
                     continue
@@ -1017,7 +1008,7 @@ class BallFollower:
                 if new_state == RobotState.APPROACH:
                     self.head_controller.set_approach_mode(True)
                 elif new_state in [RobotState.SEARCH, RobotState.AIM]:
-                    # SEARCH: head oscillation, AIM: 글랜스 스캔
+                    # SEARCH와 AIM 스캔에는 응답이 빠른 머리 제어 모드를 쓴다.
                     self.head_controller.set_search_mode(True)
                 else:
                     self.head_controller.set_approach_mode(False)
@@ -1033,14 +1024,14 @@ class BallFollower:
                     self.search_body_timer = 0.0
                 elif new_state == RobotState.AIM:
                     self.aim_start_time = time.time()
-                    # APPROACH에서 머리 들면서 쌓인 lost_frames 리셋
+                    # 접근 중 머리를 들어 생긴 미검출 횟수는 AIM에 넘기지 않는다.
                     with self._obs_lock:
                         self._ball_obs.lost_frames = 0
                     self.lost_frames = 0
                 elif new_state == RobotState.KICK:
                     self.kick_settling = True
                     self.kick_settle_start = time.time()
-                    self.kick_start_time = 0.0  # settle 끝나면 설정
+                    self.kick_start_time = 0.0  # 안정화가 끝나면 설정
                     with self._obs_lock:
                         self._ball_obs.lost_frames = 0
                     self.lost_frames = 0
@@ -1054,7 +1045,7 @@ class BallFollower:
         with self.motor_lock:
             self.motor_pos[msg.id] = msg.position
             self.motor_vel[msg.id] = getattr(msg, 'velocity', 0.0)
-            self.motor_fb_time[msg.id] = now                        # 신선도 게이팅용
+            self.motor_fb_time[msg.id] = now
 
     def rgb_cb(self, msg):
         try:
@@ -1197,9 +1188,8 @@ class BallFollower:
         return yaw_delta, pitch_delta
 
     # 영상 관측으로 위치 추정과 robot_state를 갱신한다.
-    # ball_follower YOLO 결과(boxes)에서 랜드마크 추출 → PF → robot_state(brain 입력).
+    # YOLO boxes에서 랜드마크를 추출하고 위치 추정 결과를 brain에 전달한다.
     def _tronb_perceive(self, boxes, depth, ball_obs, goal_data):
-        # 검출 클래스와 투영 기하를 적용해 랜드마크 관측을 만든다.
         try:
             lm_obs = self.tronb_realpos.landmark_observations(boxes, depth)
         except Exception as e:
@@ -1283,12 +1273,12 @@ class BallFollower:
                 if self.ball_kalman.initialized:
                     self.ball_kalman.get_predicted_position(self.cfg.kalman_predict_time)
 
-                # 상태별 head 제어 (AIM은 control_loop에서 직접 제어 -> 여기선 패스)
+                # AIM의 머리 제어는 control_loop에서 처리한다.
                 if curr == RobotState.SEARCH:
                     pass
 
                 elif curr == RobotState.APPROACH:
-                    # pitch만 거리 기반 설정, yaw는 아래 ball tracking에서 처리
+                    # pitch는 거리로 정하고 yaw는 아래 공 추종 코드에서 갱신한다.
                     with self.lock:
                         target_pitch = self.get_approach_pitch(self.ball_dist)
                         self.head_controller.target_pitch = target_pitch
@@ -1311,8 +1301,8 @@ class BallFollower:
                 h, w = frame.shape[:2]
                 debug = frame.copy()
 
-                # 골대 감지 -> world-angle 기억 갱신
-                # SEARCH/TRACK/AIM 어디서든 골대가 보이면 기억을 채워둔다(상시 유지).
+                # 골대 관측을 세계 좌표계 방향으로 기억한다.
+                # SEARCH, TRACK, AIM에서 기억을 갱신한다.
                 goal_data = self.find_goal_in_results(results[0].boxes, w, h)
 
                 if curr in [RobotState.SEARCH, RobotState.TRACK, RobotState.AIM]:
@@ -1324,7 +1314,6 @@ class BallFollower:
                             width=goal_data['width'],
                             conf=goal_data['conf']
                         )
-                        # 2프레임만 연속 잡혀도 기억 갱신(빠른 획득)
                         if self.goal_detector.consecutive_detect >= 2:
                             self.goal_memory.update_from_detection(
                                 goal_screen_x=goal_data['norm_x'],
@@ -1386,7 +1375,6 @@ class BallFollower:
 
                     last_valid = final_dist if final_dist < 2.5 else self.last_valid_dist
 
-                    # Atomic observation 작성 (감지 메타데이터 포함)
                     obs = BallObservation(
                         area=area,
                         dist=final_dist,
@@ -1406,7 +1394,7 @@ class BallFollower:
                     with self._obs_lock:
                         self._ball_obs = obs
 
-                    # 개별 변수도 업데이트 (하위 호환)
+                    # 기존 머리 제어 코드가 읽는 관측값도 갱신한다.
                     with self.lock:
                         self.ball_area = area
                         self.ball_screen_x = norm_x
@@ -1427,7 +1415,7 @@ class BallFollower:
                             new_pitch = np.clip(curr_pitch + pitch_delta * 0.3, *self.cfg.head_pitch_limit)
                             self.head_controller.set_target(new_yaw, new_pitch)
                         elif curr == RobotState.APPROACH:
-                            # yaw만 ball tracking, pitch는 state-based에서 거리 기반 설정
+                            # pitch는 앞에서 거리로 정했으므로 yaw만 공을 추종한다.
                             new_yaw = np.clip(curr_yaw + yaw_delta * 0.3, *self.cfg.head_yaw_limit)
                             self.head_controller.target_yaw = new_yaw
 
@@ -1437,7 +1425,6 @@ class BallFollower:
                     cv2.putText(debug, f"A:{area:.0f} D:{self.ball_dist:.2f}",
                                (int(bx-sz/2), int(by-sz/2)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
 
-                    # Vision은 데이터만 갱신. 상태 전이 판단은 Control Loop에서.
 
                 else:
                     if self.ball_kalman.initialized:
@@ -1471,7 +1458,7 @@ class BallFollower:
                     except Exception as e:
                         rospy.logwarn_throttle(5.0, f"[TRONB] perceive 실패: {e}")
 
-                # Debug overlay (get_command 호출 없이 값만 읽기 - EMA 진행 방지)
+                # 화면 표시 때문에 EMA가 갱신되지 않도록 현재 출력만 읽는다.
                 yaw_dbg = self.head_controller.filtered_yaw
                 pitch_dbg = self.head_controller.filtered_pitch
 
@@ -1584,7 +1571,7 @@ class BallFollower:
           try:
             self.control_wd.feed()
 
-            # SAFE STOP (watchdog/예외 latch). 정지 + 상체 현재위치 compliant 유지.
+            # 정지 중에는 상체의 현재 위치를 낮은 Kp로 유지한다.
             if self._safe_stop_active:
                 self.send_twist_v2(0.0, 0.0)
                 snap = self.get_motor_snapshot()
@@ -1604,16 +1591,15 @@ class BallFollower:
                 imu_yaw = self.current_yaw_imu
 
             yaw_comp, pitch_comp = self.head_stabilizer.update(body_roll, body_pitch)
-            # state machine 전에는 filtered 값만 읽기 (EMA 진행 없음)
-            # get_command()는 state machine 후에 호출 → set_target_direct 반영됨
+            # 상태 판단 전에는 EMA를 갱신하지 않고 현재 출력만 읽는다.
+            # get_command()는 목표를 정한 뒤 호출해 이번 틱의 변경을 반영한다.
             yaw_cmd = self.head_controller.filtered_yaw
             pitch_cmd = self.head_controller.filtered_pitch
 
-            # Atomic observation 읽기
             with self._obs_lock:
                 obs = self._ball_obs
 
-            # 새 프레임인지 확인 (50Hz control vs 30Hz vision 동기화)
+            # 50 Hz 제어 루프가 30 Hz 비전 프레임을 중복 처리하지 않도록 구분한다.
             is_new_frame = (obs.frame_id != self._last_processed_frame)
 
             with self.lock:
@@ -1628,7 +1614,7 @@ class BallFollower:
             lost = obs.lost_frames
 
             # 지각→제어 지연 보상
-            # obs 나이(obs_age) + 파이프라인 지연만큼 로봇이 전진했다고 보고 거리를 당겨줌
+            # 관측 경과 시간과 파이프라인 지연 동안의 전진 거리를 뺀다.
             # 관측이 오래되거나 이동 속도가 빠르면 더 일찍 정지한다.
             obs_age = max(0.0, time.time() - obs.timestamp)
             lat = obs_age + self.tuning.perception_latency
@@ -1640,18 +1626,18 @@ class BallFollower:
                 self._last_processed_frame = obs.frame_id
 
                 if self.use_tronb_brain and self.tronb_robot_state:
-                    # 넘어짐은 ball_follower fall guard(아래)가 별도 처리하므로 brain 엔 is_fallen=False.
+                    # 넘어짐은 아래 공통 검사에서 처리하므로 brain에는 False를 전달한다.
                     dec = self.tronb_brain.decide(self.tronb_robot_state, lower={"is_fallen": False})
                     self._tronb_force_stop = dec.force_stop
                     self._tronb_suppress_kick = dec.suppress_kick
                     try:
-                        mapped = RobotState[dec.state]   # brain 의 state 이름 → ball_follower RobotState
+                        mapped = RobotState[dec.state]
                     except KeyError:
                         mapped = RobotState.SEARCH
                     if mapped != curr and curr not in (RobotState.RECOVER, RobotState.COOLDOWN):
                         self.set_state(mapped)
                 else:
-                    # 원본 ball_follower 전이 (use_tronb_brain=False)
+                    # brain이 꺼져 있거나 관측이 없으면 기본 전이를 사용한다.
                     self._tronb_force_stop = False
                     self._tronb_suppress_kick = False
                     if obs.detected and obs.consecutive_detect >= self.cfg.min_consecutive_detect:
@@ -1670,7 +1656,7 @@ class BallFollower:
             with self.lock:
                 curr = self.state
 
-            # Fall guard (모든 상태 공통). roll/pitch fall 한계 넘으면 즉시 정지 + RECOVER.
+            # 모든 상태에서 roll/pitch 한계를 검사하고 초과하면 RECOVER로 전환한다.
             if (math.isfinite(body_roll) and math.isfinite(body_pitch) and
                     (abs(body_roll) > self.cfg.roll_fall_limit or
                      abs(body_pitch) > self.cfg.pitch_fall_limit)):
@@ -1691,12 +1677,12 @@ class BallFollower:
                 # 전진 drift 보상 (TRON1 walk mode 하드웨어 drift)
                 cvx = self.tuning.search_drift_compensation
 
-                # body 좌우 sin 회전 (한쪽으로만 안 돌게)
+                # 한쪽으로 계속 돌지 않도록 회전 방향을 주기적으로 바꾼다.
                 self.search_body_timer += 0.02
                 phase = (2.0 * math.pi / self.tuning.search_turn_period) * self.search_body_timer
                 cwz = self.tuning.search_turn_speed * math.sin(phase) + self.tuning.search_turn_bias
 
-                # head oscillation (50Hz, goal_memory 유무 관계없이 항상)
+                # 골대 기억 유무와 관계없이 50 Hz로 머리를 스캔한다.
                 current_time = time.time()
                 target_pitch = self.tuning.search_head_pitch_center + \
                                self.cfg.scan_pitch_amplitude * math.sin(current_time * 2.0)
@@ -1736,7 +1722,6 @@ class BallFollower:
                         base_turn = -turn_dir * yaw_cmd * 0.70
                         drift_correction = self.tuning.approach_drift_correction
 
-                        # 곡선 주행
                         curve_turn = 0.0
                         if self.tuning.curved_approach_enabled and dist < self.tuning.curved_approach_dist:
                             gdir, gvalid = self._goal_direction(imu_yaw)   # loc 우선, 폴백 IMU 기억
@@ -1764,21 +1749,19 @@ class BallFollower:
                             self.set_state(RobotState.AIM)
 
             elif curr == RobotState.AIM:
-                # 골대 기억, 제한된 스캔 시간, 타임아웃 순으로 킥을 판단한다.
-                # - 골대 기억 있으면: 바로 정렬/킥
-                # - 기억 없으면: aim_glance_time 동안만 고개 들어 스캔 -> 그래도 없으면 직진 킥
-                # aim_timeout 뒤에는 정렬 여부와 관계없이 킥한다.
+                # 스캔 후에도 골대 기억이 없으면 직진 킥한다.
+                # aim_timeout을 넘기면 정렬 여부와 관계없이 킥한다.
                 elapsed = time.time() - self.aim_start_time
                 cvx = self.tuning.search_drift_compensation   # 제자리(앞밀림만 상쇄)
                 cwz = 0.0
 
-                # localization 신뢰 시 그 골방향, 아니면 IMU 기억 (기본 OFF면 항상 IMU 기억)
+                # 외부 위치 추정이 꺼져 있거나 유효하지 않으면 IMU 기억을 쓴다.
                 aim_goal_dir, have_goal = self._goal_direction(imu_yaw)
 
                 if elapsed < self.tuning.aim_settle_time:
                     pass
                 elif not have_goal and elapsed < self.tuning.aim_settle_time + self.tuning.aim_glance_time:
-                    # 골대 기억 없음 -> 짧게 고개 들어 스캔 (vision_loop가 잡으면 기억 갱신됨)
+                    # 골대가 보이면 vision_loop가 기억을 갱신한다.
                     scan_yaw = 0.5 * math.sin(elapsed * 3.0)
                     self.head_controller.set_target_direct(scan_yaw, self.tuning.aim_look_pitch)
                 else:
@@ -1886,7 +1869,7 @@ class BallFollower:
             self.send_motor_offset(self.cfg.l_roll_id, left_roll, kp)
             self.send_motor_offset(self.cfg.r_roll_id, right_roll, kp)
 
-            self._publish_odom(cvx, cwz, imu_yaw)   # localization predict 입력 (enabled일 때만)
+            self._publish_odom(cvx, cwz, imu_yaw)   # 외부 위치 추정이 활성화된 경우에만 발행
 
             rate.sleep()
           except Exception as e:
@@ -1935,7 +1918,7 @@ class BallFollower:
         # 추종 오차가 한계를 넘으면 지령 증가를 멈추고 Kp를 낮춘다.
         if abs(safe - actual) > self.cfg.follow_err_limit:
             with self.lock:
-                self.prev_arm_cmd[key] = prev   # advance 안 함 (계속 밀지 않음)
+                self.prev_arm_cmd[key] = prev
             self.send_motor_raw(mid, prev, self.cfg.follow_err_kp_backoff)
             rospy.logwarn_throttle(1.0, f"[motor {mid}] follow_err {abs(safe-actual):.2f}rad -> kp backoff")
             return
@@ -1945,7 +1928,7 @@ class BallFollower:
         self.send_motor_raw(mid, safe, kp)
 
     def send_motor_raw(self, mid, pos, kp):
-        if pos is None or not np.isfinite(pos):   # NaN 가드
+        if pos is None or not np.isfinite(pos):
             return
         cmd = MotorCommand()
         cmd.id = mid
@@ -1958,7 +1941,7 @@ class BallFollower:
 
     def send_twist_v2(self, x, z, is_kick=False):
         if not self.is_robot_ready: return
-        if x is None or not np.isfinite(x): x = 0.0   # NaN 가드
+        if x is None or not np.isfinite(x): x = 0.0
         if z is None or not np.isfinite(z): z = 0.0
         if is_kick:
             max_spd, acc, dec = self.cfg.kick_max_speed, self.cfg.kick_acc_limit, self.cfg.kick_acc_limit
@@ -1977,7 +1960,7 @@ class BallFollower:
         # 지연 보상에 사용하는 prev_cmd_x는 공 접근을 양수로 유지한다.
         self.prev_cmd_x, self.prev_cmd_wz = fx, fz
 
-        # TRON1 로 나가는 선속도만 반전 (역관절: 공 접근 = TRON1 -x)
+        # 카메라 전방이 TRON1의 -x이므로 송신할 선속도만 반전한다.
         out_x = -fx if self.cfg.reverse_gait else fx
 
         with self.ws_lock:
@@ -2025,7 +2008,7 @@ class BallFollower:
             pass
 
     def shutdown(self):
-        # 정지 + 상체 토크 해제 (kp=0). 종료 시 팔이 hold 토크를 물고 있지 않게.
+        # 종료 후 팔의 위치 유지 토크가 남지 않도록 Kp를 0으로 보낸다.
         print("\nShutdown...")
         self._safe_stop_active = True
         self.ws_should_reconnect = False
@@ -2045,7 +2028,6 @@ class BallFollower:
 
 
 if __name__ == "__main__":
-    # 현장 튜닝 파라미터
     tuning = TuningParams(
         align_good_angle = 0.10,      # 5.7도 이하면 정렬 완료로 보고 킥
         align_turn_speed = 0.08,
@@ -2060,12 +2042,12 @@ if __name__ == "__main__":
         stop_dist = 0.50,             # 보상 거리 이 값 이하면 AIM 진입
         stop_confirm_frames = 2,
 
-        # 곡선 주행 (AIM 회전량 줄이려고 미리 골대쪽으로 휘어 접근)
+        # AIM 회전량을 줄이기 위해 골대 방향으로 휘어 접근한다.
         curved_approach_enabled = True,
         curved_approach_dist = 0.6,
         curved_approach_gain = 0.15,
 
-        # 골대 메모리 (접근 중 유지되도록 decay 낮춤)
+        # 접근 중 골대 기억이 유지되도록 신뢰도를 천천히 낮춘다.
         goal_yaw_rate_decay = 0.4,
 
         straight_drift_correction = -0.05,

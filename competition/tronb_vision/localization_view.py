@@ -1,16 +1,8 @@
 from __future__ import annotations
-"""
-localization_view.py — 필드 top-view (별도 창). FPS 안정 위주.
+"""필드, 파티클과 추정 위치를 별도 OpenCV 창에 표시한다.
 
-FPS 전략:
-- 정적 배경(필드 라인 + 맵 랜드마크)은 __init__ 에서 1회만 렌더 → self._bg 캐시.
-- 매 프레임은 bg 복사 + 파티클을 'vectorized 픽셀 set'(루프 없음) + pose 화살표 몇 개만.
-- 파티클 600개도 numpy 인덱싱으로 한 번에 찍어 비용 거의 0.
-- 갱신은 호출측에서 저속(throttle)로. 기능 OFF면 창 자체를 안 띄움(비용 0).
-
-localization 과 landmark_comp 를 한 창에 같이 표시(컴팩트):
-  맵 랜드마크 / 파티클 / 추정 pose / 공격 골대 / (landmark_comp 시) 검출 랜드마크 world 점.
-"""
+필드 배경은 캐시하고 파티클은 NumPy 인덱싱으로 그린다.
+TopViewManager가 표시 여부와 갱신 간격을 관리한다."""
 from typing import List, Optional
 
 import numpy as np
@@ -78,10 +70,10 @@ class FieldTopView:
                real_ball_method: str = "none",
                real_landmarks: Optional[List] = None) -> np.ndarray:
         import cv2
-        img = self._bg.copy()   # 정적 배경 재사용 (싸다)
+        img = self._bg.copy()   # 정적 필드 배경 재사용
         pf = loc.pf
 
-        # 파티클: vectorized 픽셀 set (루프 없음)
+        # 파티클을 픽셀 좌표로 변환해 한 번에 그린다.
         p = pf.p
         n = len(p)
         if n > self.particle_max:
@@ -152,12 +144,10 @@ class FieldTopView:
 
 
 class TopViewManager:
-    """localization/landmark_comp 가 visible 일 때만 top-view 창을 띄우고 저속 갱신.
-    run_sim/run_camera 공용. 기능 OFF면 창 닫고 비용 0."""
+    """위치추정 표시가 켜졌을 때만 필드 창을 열고 지정한 간격으로 갱신한다."""
     def __init__(self, win_name: str = "localization (top view)", every: int = 1):
         self.win = win_name
-        # 매 루프 렌더(every=1)가 기본 — top-view 렌더는 YOLO 추론보다 훨씬 싸서 FPS 영향 작고,
-        # 3프레임마다 1회(이전 기본)는 카메라 이동 시 뚝뚝 끊겨 보였다. FPS 부족하면 2~3 으로.
+        # every를 늘리면 그리는 횟수를 줄일 수 있다.
         self.every = max(1, every)
         self._view: Optional[FieldTopView] = None
         self._open = False

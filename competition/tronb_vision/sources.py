@@ -1,13 +1,8 @@
 from __future__ import annotations
-"""
-sources.py — 카메라 소스 추상화 (기준: v8.2).
+"""실제 카메라, MuJoCo와 테스트용 영상 소스를 제공한다.
 
-CameraSource.read() -> FramePacket(rgb, depth, capture_time, frame_id)
-- capture_time 으로 vision latency 측정 → 오래된 프레임 stale 처리.
-- ThreadedCameraSource: 캡처를 별도 스레드로 빼서 처리 루프가 캡처에 안 막히게 (병목 방지).
-- DummySource: mujoco/realsense 없이 headless 실행.
-- MuJoCoCameraSource: scene xml 에서 RGB+depth 렌더 (경로만 맞추면 됨).
-"""
+read()는 영상, 깊이, 촬영 시각과 프레임 ID를 담은 FramePacket을 반환한다.
+ThreadedCameraSource는 별도 스레드에서 캡처하고 최신 프레임만 보관한다."""
 
 import importlib
 import math

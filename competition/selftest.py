@@ -15,7 +15,7 @@ from tronb_vision.sources import DummySource, FramePacket
 
 
 class NoDepthSource(DummySource):
-    """depth=None → 거리 추정이 area 기반(=가까워질수록 작아지는 dist)으로 동작."""
+    """깊이 없이 박스 면적으로 거리를 추정하는 경로를 검사한다."""
     def read(self):
         pkt = super().read()
         return FramePacket(pkt.rgb, None, pkt.capture_time, pkt.frame_id)
@@ -27,7 +27,7 @@ def square(cls_id, cls_name, conf, side, cx=320, cy=240):
 
 
 def build_script():
-    """공: side 30→280 램프 후 유지(가까워짐). 골: 중앙 상시(정렬 가능)."""
+    """공 박스를 30에서 280픽셀까지 키우고 골은 화면 중앙에 유지한다."""
     frames = []
     side = 30.0
     for _ in range(700):

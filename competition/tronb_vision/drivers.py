@@ -1,16 +1,8 @@
 from __future__ import annotations
-"""
-drivers.py — 구동 추상화 (기준: v8.2). 공통 로직은 그대로, 전송만 교체.
+"""속도와 머리 각도 명령을 드라이버별로 전달한다.
 
-RobotDriver:
-  send_twist(x, z)        하체 속도 명령
-  set_head(yaw, pitch)    머리 각 명령
-  get_base_pose()         (sim) 로봇 pose / (real) None
-  get_ball_relative()     (sim) 공 상대거리 GT / (real) None
-  step()                  (sim) 물리 step
-주의: 실로봇 driver(WebSocketRobotDriver)는 v11 의 모터 안전 파이프라인을 반드시 이식해야 한다.
-      여기 RealStubDriver 는 결선 지점만 잡아둔 stub.
-"""
+MuJoCo 드라이버는 위치를 직접 갱신한다. RealStubDriver는 연결 지점만
+제공하며, 실기 연결에는 추종 오차·가동 범위·피드백 지연·NaN 검사가 필요하다."""
 
 import math
 import time
@@ -34,7 +26,7 @@ class RobotDriver:
 
 
 class DryRunDriver(RobotDriver):
-    """명령을 받기만 하고 아무 데도 안 보냄. headless/selftest."""
+    """마지막 명령을 저장하는 테스트용 드라이버. 장치에는 전송하지 않는다."""
     def __init__(self, verbose=False):
         self.verbose = verbose
         self.last_twist = (0.0, 0.0); self.last_head = (0.0, 0.0)
@@ -46,8 +38,8 @@ class DryRunDriver(RobotDriver):
 
 
 class MuJoCoRobotDriver(RobotDriver):
-    """MuJoCo: freejoint qpos 직접 갱신(teleport). 실제 보행 아님 — 비전/전략 시각 검증용.
-    scene 이름은 cfg.sim_* 에서 가져온다 (정확한 단일 이름. 바꾸려면 config 한 곳만)."""
+    """freejoint의 qpos를 직접 갱신하는 시각 검증용 드라이버.
+    보행 물리는 재현하지 않으며, scene의 이름은 cfg.sim_*에서 읽는다."""
     def __init__(self, source, cfg: RobotConfig):
         self.source = source; self.cfg = cfg
         self.qpos_start = None; self.yaw_qpos = None; self.pitch_qpos = None
@@ -90,7 +82,7 @@ class MuJoCoRobotDriver(RobotDriver):
         return math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
 
     def send_twist(self, x, z, is_kick=False):
-        """속도 명령을 qpos 변위로 적분(teleport). slew/clamp 로 부드럽게."""
+        """명령 변화량과 최대값을 제한한 뒤 qpos를 직접 갱신한다."""
         if self.qpos_start is None: return
         mx = self.cfg.kick_max_speed if is_kick else self.cfg.max_linear_speed
         fx = clamp(self.prev_x + clamp(x - self.prev_x, -self.cfg.acc_limit, self.cfg.dec_limit), -mx, mx)
@@ -130,12 +122,12 @@ class MuJoCoRobotDriver(RobotDriver):
 
 
 class RealStubDriver(RobotDriver):
-    """실로봇 결선 지점 stub. ⚠ v11 의 모터 안전(follow-error/limit/staleness/NaN)을
-    여기 send_twist/set_head 로 이식해야 실로봇에 안전하게 쓸 수 있다. v9 자체는 비전/시뮬용."""
+    """실기 드라이버를 연결하기 위한 미구현 클래스.
+    명령 전송과 추종 오차·가동 범위·피드백 지연·NaN 검사가 필요하다."""
     def __init__(self, cfg: RobotConfig):
         self.cfg = cfg
         print("[RealStubDriver] ⚠ 실로봇 안전 로직 미포함. v11 driver 로 교체 필요.")
     def send_twist(self, x, z, is_kick=False):
-        pass  # TODO: v11 안전 + TRON1 WS
+        pass  # TODO: TRON1 WebSocket 전송과 명령 검증
     def set_head(self, yaw, pitch):
-        pass  # TODO: v11 안전 + CubeMars 모터
+        pass  # TODO: CubeMars 모터 전송과 명령 검증

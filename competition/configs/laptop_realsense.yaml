@@ -1,7 +1,7 @@
-# 노트북 + RealSense (실 카메라 검증). 실환경이므로 real 모델 권장.
+# 노트북에서 RealSense 입력을 확인하는 설정.
 robot:
   detector_backend: onnx
-  model_path: weights/real_best.onnx   # 실환경=real 모델. 파이프라인 스모크테스트만이면 sim_best.pt 도 가능(backend 자동 pt)
+  model_path: weights/real_best.onnx   # 저장소에 포함된 실제 카메라용 모델
   conf_thres: 0.40
   img_width: 640
   img_height: 480
@@ -14,14 +14,14 @@ robot:
   camera_x: 0.0
   camera_y: 0.0
   camera_pitch_down_deg: 20.0
-  use_imu_pitch: true                 # D435i accel 사용. 실패하면 camera_pitch_down_deg manual fallback
+  use_imu_pitch: true                 # D435i 가속도계를 사용하고, 실패하면 camera_pitch_down_deg를 사용한다.
   use_sysfs_imu_pitch: true
   imu_pitch_alpha: 0.15
   imu_pitch_offset_deg: 0.0
   imu_accel_fps: 0
-  localization_enabled: true          # 켜야 PF 동작 + top-view 가 origin 고정 안 됨
-  loc_field_mode: x_pos               # 그린 절반(원점=하프웨이라인, +x=골 방향). 전체 필드면 full
-  loc_init_mode: uniform              # 그 절반 안 어디서 시작하든 수렴. 시작 진영 알면 own_half
+  localization_enabled: true          # PF 위치추정을 켜고 top-view에 반영한다.
+  loc_field_mode: x_pos               # 원점은 하프웨이라인, +x는 골 방향. 전체 필드는 full.
+  loc_init_mode: uniform              # 선택한 필드 범위에 균일하게 초기화한다. 우리 진영으로 제한하려면 own_half.
   loc_landmark_classes: ["L","T","X","corner_arc","penalty_mark","goalpost"]  # PF 에 넣을 랜드마크
 tuning:
-  perception_latency: 0.10              # 노트북 CPU 추론이 느릴 수 있어 약간 크게
+  perception_latency: 0.10              # 거리 보상에 쓰는 인식 지연 가정값 [s]

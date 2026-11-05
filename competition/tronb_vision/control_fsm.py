@@ -12,10 +12,7 @@ from typing import Any, Dict, Optional, Tuple
 
 
 class BallPerceptionState(str, Enum):
-    """
-    비전팀 vision_state.py가 robot_state["ball_perception_state"]에 써주는 값.
-    str 상속이므로 robot_state.get("ball_perception_state") 결과와 == 비교 가능.
-    """
+    """robot_state의 공 인식 상태. str을 상속해 문자열과 직접 비교할 수 있다."""
     BALL_LOST               = "BALL_LOST"
     BALL_TEMP_LOST          = "BALL_TEMP_LOST"
     BALL_UNSTABLE           = "BALL_UNSTABLE"
@@ -27,12 +24,9 @@ class BallPerceptionState(str, Enum):
 
 
 class VisionStateAdapter:
-    """
-    robot_state dict → FSM이 쓰는 정규화된 값으로 변환.
-    비전팀 출력 key가 바뀌면 여기만 수정하면 된다.
-    """
+    """robot_state의 필드를 FSM 입력 형식으로 변환한다."""
 
-    # robot_state key 이름 매핑 (비전팀과 협의 후 여기서 일괄 관리)
+    # robot_state 입력 키
     KEY_BALL_PERCEPTION  = "ball_perception_state"
     KEY_BALL_DIST        = "ball_dist"
     KEY_BALL_SCREEN_X    = "ball_screen_x"
@@ -46,10 +40,7 @@ class VisionStateAdapter:
 
     @classmethod
     def parse(cls, robot_state: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        robot_state dict에서 FSM에 필요한 값을 추출·정규화해서 반환.
-        없는 key는 안전한 기본값으로 채운다.
-        """
+        """FSM 입력을 정규화하고 누락된 키는 기본값으로 채운다."""
         raw_bps = robot_state.get(cls.KEY_BALL_PERCEPTION, "UNKNOWN")
         try:
             bps = BallPerceptionState(raw_bps)
@@ -65,14 +56,13 @@ class VisionStateAdapter:
             "goal_visible":          bool (robot_state.get(cls.KEY_GOAL_VISIBLE,  False)),
             "goal_centered":         bool (robot_state.get(cls.KEY_GOAL_CENTERED, False)),
             "localization_ok":       bool (robot_state.get(cls.KEY_LOCALIZATION_OK, False)),
-            # 비전팀이 lost_frames/consecutive_detect를 직접 노출하지 않으면 bps로 추론
             "lost_frames":           int  (robot_state.get(cls.KEY_LOST_FRAMES,   0)),
             "consecutive_detect":    int  (robot_state.get(cls.KEY_CONSEC_DETECT, 0)),
         }
 
 
 class RobotState(Enum):
-    """하체 PC로도 전달할 기본 행동 상태. BLIND_APPROACH는 사용하지 않는다."""
+    """하체 PC로 전달할 동작 상태."""
 
     SEARCH = 0
     TRACK = 1
@@ -87,10 +77,7 @@ class RobotState(Enum):
 
 @dataclass
 class BallObservation:
-    """
-    비전팀 BallFollowerVisionCore의 BallObservation과 호환되는 최소 필드.
-    현재 상체 노드에 이미 같은 이름의 dataclass가 있으면 그 객체를 그대로 넣어도 된다.
-    """
+    """공 관측값에 필요한 최소 필드."""
 
     area: float = 0.0
     dist: float = 9.99
@@ -119,12 +106,7 @@ class GoalObservation:
 
     @staticmethod
     def from_goal_data(goal_data: Optional[Dict[str, Any]], now: Optional[float] = None) -> "GoalObservation":
-        """
-        다양한 비전팀 dict key를 최대한 받아들이는 보조 변환 함수.
-        expected examples:
-          {"norm_x": 0.1, "norm_y": -0.2, "conf": 0.8}
-          {"screen_x": 0.1, "screen_y": -0.2, "confidence": 0.8}
-        """
+        """norm_x/norm_y 또는 screen_x/screen_y 형식의 골 관측값을 변환한다."""
         if goal_data is None:
             return GoalObservation(detected=False, timestamp=now or time.time())
 
@@ -165,10 +147,7 @@ class LowerStatus:
 
 @dataclass
 class ControlCommand:
-    """
-    FSM이 하체/상체 adapter에 넘기는 명령 후보.
-    현재 UDP가 state만 보낸다면 우선 state만 쓰고, 나중에 vx/vy/wz/kick_trigger를 패킷에 추가하면 된다.
-    """
+    """FSM이 상체·하체 어댑터로 전달하는 상태와 명령 후보."""
 
     state: RobotState
     target_body_vx: float = 0.0
@@ -246,14 +225,10 @@ class BasicFSMConfig:
 
 
 class BasicRobotStateFSM:
-    """
-    기본 RobotState FSM.
+    """하체 상태와 robot_state를 받아 동작 상태와 명령을 계산한다.
 
-    사용 예:
-        fsm = BasicRobotStateFSM()
-        result = fsm.update(pkt, obs, vision_fresh=True, goal_obs=goal)
-        lower_state = result.state
-        cmd = result.command
+    result = fsm.update(lower_status, robot_state)로 갱신하고,
+    result.state와 result.command에서 결과를 읽는다.
     """
 
     def __init__(self, config: Optional[BasicFSMConfig] = None):
@@ -291,7 +266,7 @@ class BasicRobotStateFSM:
 
         Args:
             lower:        하체 상태 dict 또는 LowerStatus.
-            robot_state:  비전팀이 채워준 robot_state dict.
+            robot_state:  인식 모듈이 갱신한 robot_state dict.
                           최소 필요 key:
                             ball_perception_state, ball_dist, ball_screen_x,
                             vision_kick_candidate_hint,
@@ -302,7 +277,6 @@ class BasicRobotStateFSM:
         now = now or time.time()
         status = LowerStatus.from_pkt(lower) if isinstance(lower, dict) else lower
 
-        # 비전팀 robot_state → 정규화된 vision dict
         vis = VisionStateAdapter.parse(robot_state)
 
         prev   = self.state
@@ -496,20 +470,13 @@ class BasicRobotStateFSM:
         vis: Dict[str, Any],
         now: float,
     ) -> Dict[str, Any]:
-        """
-        비전팀 robot_state 파싱 결과(vis)를 받아 FSM 전환 조건 flag를 만든다.
-
-        핵심 설계 원칙:
-        - ball_seen / ball_stable / ball_lost_hard 는 BallPerceptionState에서 직접 유도.
-        - 거리/중앙 정렬 관련 수치 threshold는 BasicFSMConfig에서 관리.
-        - vision_kick_candidate_hint는 ALIGN_GOAL→KICK 조건의 보조 신호로 사용.
-          (hint가 True여도 FSM이 추가 조건을 확인 후 최종 결정)
+        """인식 상태와 설정 임계값으로 FSM 전이 조건을 만든다.
+        킥 후보 힌트만으로 킥하지 않고 정렬 등 추가 조건을 함께 확인한다.
         """
         bps  = vis["ball_perception_state"]
         dist = vis["ball_dist"]
         sx   = vis["ball_screen_x"]
 
-        # 비전 state 기반 기본 존재 판단
         # "공이 보이는" 상태: UNSTABLE 이상. LOST / TEMP_LOST / UNKNOWN은 미검출 취급.
         ball_seen   = bps not in (
             BallPerceptionState.BALL_LOST,
@@ -535,7 +502,7 @@ class BasicRobotStateFSM:
         ball_stop_range     = ball_seen and self.cfg.stop_min_dist <= dist <= self.cfg.stop_max_dist
         ball_too_close      = bps == BallPerceptionState.BALL_TOO_CLOSE
 
-        # 골대 flag: 비전팀 판단값 직접 사용
+        # 골 관측과 중앙 정렬 여부는 인식 모듈의 결과를 사용한다.
         goal_seen     = vis["goal_visible"]
         goal_centered = vis["goal_centered"]
 

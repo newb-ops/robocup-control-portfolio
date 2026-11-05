@@ -2,7 +2,7 @@ joint_state_controller:
   type: joint_state_controller/JointStateController
   publish_rate: 50
 
-# Position Controllers --------------------------------------
+# 관절별 위치 제어기
 neck_joint_position_controller:
   type: effort_controllers/JointEffortController
   joint: neck_joint

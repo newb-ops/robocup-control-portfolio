@@ -1,15 +1,9 @@
 from __future__ import annotations
-"""
-app.py — BallFollower 통합 (기준: v8.2 구조 + v6 내부).
+"""인식 결과를 모아 공 추적과 동작 제어를 실행한다.
 
-스레드 정책 (병목 방지):
-  - 시뮬(threaded=False): 단일 루프. read→perceive→control→step. MuJoCo render/forward 동시접근 회피 + 결정적.
-  - Jetson(threaded=True): vision 스레드(캡처+검출+process) / control 스레드(50Hz FSM+구동) 분리.
-    → control 은 절대 YOLO/PF 안 돌리고 최신 obs 만 읽음.
-
-상태: OperationMode(LOCKED/AUTO/MANUAL) ⟂ RobotState(SEARCH..KICK).
-RobotState 는 control FSM 의 유일한 상태.
-"""
+시뮬레이션은 MuJoCo 동시 접근을 피하려고 단일 루프를 사용한다.
+스레드 모드에서는 인식과 제어를 분리하고, 제어는 최신 관측값만 읽는다.
+OperationMode는 운용 모드, RobotState는 동작 상태를 나타낸다."""
 
 import math
 import threading
@@ -36,7 +30,7 @@ from .vision_state import VisionStateConfig, build_rule_based_vision_packet
 
 # detector 는 항상 ON (토글 없음). 토글 가능한 기능:
 # localization / ball_stop : 비전 추정 기능
-# rule_state / vision_state / setplay : 제어 FSM 이 읽을 robot_state 인식 라벨 생성 (통합 계약)
+# rule_state / vision_state / setplay: 제어 FSM용 상태 생성
 FEATURES = ["localization", "ball_stop", "rule_state", "vision_state", "setplay"]
 
 
@@ -57,13 +51,12 @@ class BallFollower:
         self.head = AdaptiveHeadController()
         self.head_stab = HeadStabilizer(cfg.imu_compensation_gain)
 
-        # 기능 모듈 (켜면 동작). 위치추정 입력은 real_pos + localization 이 담당.
         self.ball_stop = BallStopEstimator(cfg.camera_fov_h)
         self.real_pos = (RealPositionEstimator(cfg, getattr(self.detector, "names", {}) or {})
                          if bool(getattr(cfg, "real_position_enabled", False)) and not bgr_input
                          else None)
         self.feat_out = {}
-        # 제어 FSM 통합 계약: vision/setplay 가 채우고 control FSM 이 읽는 dict.
+        # 인식·세트플레이 상태를 제어 FSM에 전달한다.
         self.robot_state: dict = {}
         self.vision_state_cfg = VisionStateConfig()
         # restart_type/owner 와 동일하게 GameController/상위 로직이 주입. 미주입=UNKNOWN(permissive).
@@ -73,8 +66,7 @@ class BallFollower:
         self.vision_packet = None
         self.setplay_adapter = SetPlayVisionAdapter(SetPlayVisionConfig())
         self.setplay_packet = None
-        # dual-mode: external_control=True 면 제어 FSM(control_fsm)이 구동(통합/검증),
-        # False(기본)면 내부 FSM 이 구동(단독 비전 테스트).
+        # external_control=True면 control_fsm, False면 내부 FSM을 사용한다.
         self.external_control = bool(getattr(cfg, "external_control", False))
         self.control_bridge = None
         if self.external_control:
@@ -136,8 +128,8 @@ class BallFollower:
                 self.vision.tracker.reset(); self.vision.kalman.reset()
 
     def reset_localization(self, mode: str = "global") -> None:
-        """PF 재초기화 (키 'L'). 기본 global = 필드 전체 분포 → 어디 있든 관측으로 수렴.
-        mode='own_half' 면 우리 진영만, ('x','y','th') 튜플이면 그 위치로 시딩."""
+        """PF를 초기화한다. 기본은 전체 필드, own_half는 우리 진영에 분포한다.
+        (x, y, theta) 튜플을 받으면 해당 위치 주변으로 초기화한다."""
         if isinstance(mode, (tuple, list)) and len(mode) == 3:
             self.loc.seed_pose(*mode)
             print(f"[BF] reset_localization seed {tuple(round(v,2) for v in mode)} loc_enabled={self.loc.enabled}")
@@ -180,10 +172,7 @@ class BallFollower:
         return (0.0, 0.0, dtheta)
 
     def _landmark_obs(self, boxes, depth, img_w, img_h):
-        """검출 박스 → PF Observation. 바닥 접점 픽셀 투영.
-        [patch] YOLO_CLS_TO_OBS_TYPE 으로 center_mark/penalty_mark/corner_arc 직접 지원.
-        구형 모델(line_l/t/x 만 있는 경우)도 그대로 동작.
-        """
+        """검출 클래스와 바닥 투영 좌표를 PF 관측값으로 변환한다."""
         if self.real_pos is not None:
             return self.real_pos.landmark_observations(boxes, depth)
         from .localization import YOLO_CLS_TO_OBS_TYPE
@@ -218,7 +207,7 @@ class BallFollower:
             floor = self.loc.transform.pixel_to_floor_direct(u, vv, d) if d else None
             if floor:
                 out.append(Observation(obs_type, floor[0], floor[1]))
-        return out[:6]   # 마크류 추가로 최대 6개로 확대
+        return out[:6]
 
     # 인지
     def _perceive(self, pkt: FramePacket):
@@ -244,12 +233,11 @@ class BallFollower:
         if self.real_pos is not None:
             ball_xy, ball_method = self.real_pos.ball_robot_xy(boxes, pkt.depth, self.cmap.get("ball", ()))
             feat["real_position"] = self.real_pos.last_snap
-            # Keep the legacy BallObservation contract, but expose the better
-            # RealSense floor coordinate to feature consumers.
+            # 공 관측값과 별도로 RealSense 바닥 좌표도 제공한다.
             if ball_xy is not None and self.features["ball_stop"].enabled:
                 feat["real_ball_xy"] = {"x": ball_xy[0], "y": ball_xy[1], "method": ball_method}
 
-        # 랜드마크 관측은 localization 켜졌을 때만 계산 (landmark_comp 흡수)
+        # 위치추정이 켜졌을 때만 랜드마크를 투영한다.
         need_lm = self.loc.enabled and self.features["localization"].enabled
         landmark_obs = self._landmark_obs(boxes, pkt.depth, self.cfg.img_width, self.cfg.img_height) if need_lm else []
         self._last_landmark_obs = landmark_obs
@@ -266,7 +254,6 @@ class BallFollower:
             motion = self.ball_stop.update(obs)
             feat["ball_stop"] = motion
 
-        # 제어 FSM 통합 계약: robot_state 채우기
         self._update_robot_state(obs, goal, loc_reliable, ball_xy, motion)
 
         with self._lock:
@@ -274,7 +261,6 @@ class BallFollower:
             self.feat_out = feat
         return obs
 
-    # robot_state 갱신 (vision/setplay → control FSM 계약)
     def _update_robot_state(self, obs, goal, loc_reliable, ball_xy, motion):
         rs_dict = {}   # 로컬에 채운 뒤 lock 으로 통째 스왑 (control 스레드가 일관된 스냅샷 읽도록)
         # 공 월드좌표: localization 신뢰 + 로봇기준 공좌표 있을 때만.
@@ -351,9 +337,8 @@ class BallFollower:
             return self.robot_state
 
 
-    # 골 방향: 직접 관측 우선, localization 은 폴백
-    # kick align 정밀도는 pose 오차와 무관해야 한다 → 카메라로 본 골 각도를 먼저 쓴다.
-    # 골이 안 보일 때만 localization 으로 대략 방향(탐색/접근 곡선용).
+    # 위치추정 오차가 킥 정렬에 섞이지 않도록 카메라로 본 골 방향을 우선한다.
+    # 골이 안 보일 때만 추정 위치로 방향을 구한다.
     def _goal_dir(self, imu_yaw):
         gd = self.vision.goal_memory.get_goal_direction(imu_yaw)
         if self.vision.goal_memory.is_valid():
@@ -376,10 +361,8 @@ class BallFollower:
         if self.mode == OperationMode.MANUAL:
             self.driver.send_twist(*self._manual_twist)   # UI 키보드 조작만
             return
-        # 이하 AUTO.
 
-        # external_control: 제어 FSM(control_fsm)이 robot_state 를 읽어 구동.
-        # 노트북+RealSense 단독 검증 시 이 경로로 vision→control 흐름을 확인.
+        # 외부 FSM 경로에서는 내부 FSM을 건너뛴다.
         if self.external_control and self.control_bridge is not None:
             lower = {"is_fallen": False, "pitch": 0.0, "roll": 0.0, "yaw": imu_yaw}
             self.control_bridge.step(self._robot_state_snapshot(), lower)

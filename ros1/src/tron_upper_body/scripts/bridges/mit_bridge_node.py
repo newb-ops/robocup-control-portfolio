@@ -4,7 +4,6 @@ import serial
 import struct
 from tron_upper_body.msg import MotorCommand, MotorFeedback
 
-# [설정]
 SERIAL_PORT = '/dev/ttyACM0'
 BAUDRATE = 921600
 
@@ -35,7 +34,7 @@ def read_and_publish(pub):
    if stm32 is None:
        return
 
-   # 들어온 바이트를 전부 버퍼에 누적 (경계에 의존하지 않음)
+   # 한 번의 read가 프레임 경계와 일치하지 않을 수 있다.
    n = stm32.in_waiting
    if n:
        _rx_buf.extend(stm32.read(n))
@@ -55,7 +54,6 @@ def read_and_publish(pub):
            del _rx_buf[0]
            continue
 
-       # 유효 프레임 → 파싱 후 publish
        try:
            uid, pos, vel, tor = struct.unpack('<Bfff', bytes(body))
            if 1 <= uid <= 8:
@@ -68,7 +66,7 @@ def read_and_publish(pub):
                pub.publish(fb)
        except Exception:
            pass
-       del _rx_buf[:16]                     # 처리한 프레임 제거
+       del _rx_buf[:16]
 
 
 def main():

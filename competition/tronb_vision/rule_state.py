@@ -1,13 +1,8 @@
 from __future__ import annotations
-"""
-rule_state.py — 공의 룰 상태(필드 안/라인/밖) 판단.
+"""공의 필드 좌표로 경계 안쪽, 라인 위, 경계 밖 후보를 구분한다.
 
-비전 인식 결과(localization 으로 추정한 공 월드좌표)를 받아, 공이 필드 안인지
-라인에 걸쳤는지 나간 후보인지 거친 라벨을 만든다. 최종 판정/행동은 제어 FSM 몫.
-공 월드좌표가 없거나(추정 불가) localization 불신이면 UNKNOWN.
-
-제어팀 vision_state.py / setplay.py 가 import 하는 BallRuleStatus 를 제공한다.
-"""
+공 좌표를 알 수 없으면 UNKNOWN을 반환한다. 위치추정 신뢰 여부는 호출부에서
+확인하며, 최종 판정과 동작 선택은 제어 FSM이 담당한다."""
 
 from dataclasses import dataclass, asdict
 from enum import Enum, auto

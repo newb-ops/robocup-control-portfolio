@@ -68,18 +68,16 @@ class SetPlayVisionConfig:
     """Thresholds and policy for the set-play vision FSM."""
 
 
-    # Primary motion evidence: use v6 ball-motion / stop-estimator outputs.
+    # Prefer the ball motion estimator over anchor displacement.
 
-    # Conservative default. Tune with v6 logs if real kicks are systematically
-    # slower or if jitter falsely crosses this value.
+    # Tune against recorded kicks and stationary-ball jitter.
     motion_estimator_min_speed_mps: float = 0.20
 
     # A fitted speed based on too few samples is not trusted as restart evidence.
     motion_estimator_min_fit_n: int = 2
 
 
-    # Fallback motion evidence: anchor displacement only if v6 estimator fields
-    # do not exist in robot_state.
+    # Use anchor displacement only when robot_state has no estimator fields.
 
     fallback_anchor_motion_threshold_m: float = 0.10
     fallback_anchor_confirm_frames: int = 2
@@ -93,10 +91,8 @@ class SetPlayVisionConfig:
     # hint. It is not interpreted as "teammate found".
     allow_generic_robot_detections: bool = True
 
-    # Context policy by restart type.
-    # Penalty: keep goal requirement, because direct scoring context matters.
-    # Corner / touchline: OPTIONAL in v2. Strategy (shoot/pass/approach) belongs
-    # to control, and generic robot detections are not a reliable hard gate.
+    # Penalties require goal context. Corner/touchline strategy belongs to control;
+    # generic robot detections cannot reliably determine whether play is ready.
     penalty_policy: TargetContextPolicy = TargetContextPolicy.GOAL_REQUIRED
     corner_policy: TargetContextPolicy = TargetContextPolicy.OPTIONAL
     touchline_policy: TargetContextPolicy = TargetContextPolicy.OPTIONAL
@@ -138,13 +134,13 @@ class SetPlayVisionPacket:
     motion_evidence_source: str
     ball_anchor_displacement_m: Optional[float]
 
-    # v6 estimator provenance when available.
+    # Motion estimator status and measurements, when available.
     motion_estimator_status: str
     motion_estimator_reason: str
     motion_estimator_speed_mps: Optional[float]
     motion_estimator_fit_n: Optional[int]
 
-    # Optional future multi-robot provenance only. No state decision depends on it.
+    # Optional robot metadata; not used in state decisions.
     robot_id_hint: Optional[int]
     team_role_hint: Optional[str]
 
@@ -186,7 +182,7 @@ class SetPlayVisionAdapter:
         self.cfg = cfg if cfg is not None else SetPlayVisionConfig()
         self._prev_restart_key: Optional[Tuple[RestartType, RestartOwner]] = None
 
-        # Fallback-only anchor memory. v6 estimator is preferred whenever present.
+        # Keep an anchor for frames without motion estimator output.
         self._anchor_ball_world_xy: Optional[Tuple[float, float]] = None
         self._anchor_confirm_streak: int = 0
 
@@ -382,12 +378,12 @@ class SetPlayVisionAdapter:
         return False, "NONE"
 
     def _robot_context_visible(self, robot_state: Dict[str, Any]) -> Tuple[bool, str]:
-        # Preferred explicit hook for future teammate/opponent-aware logic.
+        # Prefer an explicit robot-context flag when provided.
         explicit = robot_state.get("setplay_robot_context_visible")
         if explicit is not None:
             return bool(explicit), "robot_state.setplay_robot_context_visible"
 
-        # Weak fallback only. No current state gate depends on this in v2 default policies.
+        # Generic detections are only a hint under the default policies.
         if self.cfg.allow_generic_robot_detections:
             detections = robot_state.get("robot_detections")
             if isinstance(detections, (list, tuple)) and len(detections) > 0:
@@ -432,11 +428,8 @@ class SetPlayVisionAdapter:
         world_context_reliable: bool,
         ball_world_xy: Optional[Tuple[float, float]],
     ) -> _MotionEvidence:
-        """Return conservative restart motion evidence for DEFENSE branch.
-
-        Priority:
-          1) v6 stop/motion estimator fields, if present.
-          2) Anchor-displacement fallback, only if estimator fields are absent.
+        """Check whether the opponent has moved the ball.
+        Use estimator fields when present; otherwise compare with the saved anchor.
         """
         if not ball_ready:
             return _MotionEvidence(note="ball perception not ready")
@@ -804,7 +797,7 @@ if __name__ == "__main__":
     print(f"[pk_attack_ready] state={pkt.state.name} target={pkt.target_context_ready}:{pkt.target_context_source}")
 
 
-    # DEFENSE: use v6 estimator output when present.
+    # DEFENSE: use motion estimator output when present.
 
     defense_estimator = SetPlayVisionAdapter()
     defense_wait = {
@@ -840,7 +833,7 @@ if __name__ == "__main__":
     print(f"[defense_estimator_motion] state={pkt.state.name} moved={pkt.ball_moved_candidate} source={pkt.motion_evidence_source} speed={pkt.motion_estimator_speed_mps}")
 
 
-    # DEFENSE fallback: no v6 estimator fields -> anchor displacement needs
+    # DEFENSE fallback: without estimator fields, anchor displacement needs
     # consecutive confirmation.
 
     defense_fallback = SetPlayVisionAdapter()

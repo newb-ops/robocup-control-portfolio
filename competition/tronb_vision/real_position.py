@@ -1,10 +1,8 @@
 from __future__ import annotations
-"""RealSense field-position helpers ported from test2.
+"""Project RealSense detections onto robot-relative floor coordinates.
 
-This module intentionally does not own the RealSense pipeline and does not run
-YOLO.  It consumes the existing detector boxes and FramePacket metadata from
-run_camera.py/BallFollower.
-"""
+Uses detector boxes and FramePacket metadata from BallFollower;
+camera capture and object detection remain with the caller."""
 
 import math
 from dataclasses import dataclass
@@ -300,8 +298,7 @@ class RealPositionEstimator:
         if self.geometry is None:
             self.last_landmarks = []
             return []
-        # PF 에 넣을 pf_type whitelist. 이 필드 모델은 center(라인마다 오발화)·bar(사람 오발화)가
-        # 신뢰 불가 → 기본 ("L","T") 만. 골 설치+모델 개선 시 cfg 로 "goalpost" 등 추가.
+        # PF에 사용할 랜드마크 타입은 설정에서 제한한다. 오검출이 잦은 타입은 제외한다.
         allow = getattr(self.cfg, "loc_landmark_classes", ("L", "T", "X", "corner_arc", "penalty_mark", "goalpost"))
         allow = set(allow) if allow else None   # None/빈값 = 전부 허용
         landmarks: List[LandmarkDetection] = []

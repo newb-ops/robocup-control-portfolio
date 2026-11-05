@@ -1,13 +1,8 @@
 from __future__ import annotations
-"""
-integration.py — 비전 robot_state → 제어 FSM(control_fsm) → 드라이버 연결 + 로깅.
+"""인식 상태를 제어 FSM에 전달하고 명령과 상태 전이를 기록한다.
 
-노트북+RealSense 단독 테스트용: 로봇 없이도 카메라를 손으로 움직이며
-공 추적/킥 판정이 제어 FSM 까지 흘러가는지 검증한다.
-- ControlBridge.step(robot_state, lower): 제어 FSM 을 돌려 ControlCommand 를 만들고
-  드라이버로 보낸다(RealStubDriver 면 실구동 대신 기록만). 매 호출 로그를 남긴다.
-- 로그: 상태 전이 시 콘솔 출력 + (옵션) JSONL 파일에 매 프레임 robot_state 라벨/명령 기록.
-"""
+RealStubDriver를 연결하면 실제 구동 없이 흐름을 확인할 수 있다.
+JSONL 경로를 지정하면 매 프레임의 입력과 명령을 저장한다."""
 
 import json
 import time
@@ -15,7 +10,7 @@ from typing import Any, Dict, Optional
 
 
 class JsonlLogger:
-    """프레임별 dict 를 JSONL 한 줄씩 기록 (제어팀이 사후 검증에 사용)."""
+    """프레임별 상태와 명령을 JSONL로 기록한다."""
     def __init__(self, path: str):
         self.path = path
         self._f = open(path, "a", encoding="utf-8")
@@ -32,9 +27,9 @@ class JsonlLogger:
 
 
 class ControlBridge:
-    """robot_state 를 제어 FSM 에 먹이고 명령을 드라이버로 전달 + 로깅."""
+    """인식 상태를 FSM에 전달하고 드라이버 명령과 로그를 출력한다."""
     def __init__(self, driver, jsonl_path: Optional[str] = None, verbose: bool = True):
-        from .control_fsm import BasicRobotStateFSM   # 번들에 포함된 제어 FSM
+        from .control_fsm import BasicRobotStateFSM
         self.fsm = BasicRobotStateFSM()
         self.driver = driver
         self.verbose = verbose

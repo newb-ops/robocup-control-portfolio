@@ -1,14 +1,8 @@
 from __future__ import annotations
-"""
-game_controller.py — GameController 상태 → 비전이 참고할 허용 플래그.
+"""GameController 상태를 이동 허용 여부와 공 접촉·킥 허용 여부로 바꾼다.
 
-restart_type/owner 와 마찬가지로 게임 상태는 비전이 카메라로 알 수 없다.
-GameController(또는 테스트 config/상위 로직)가 넣어준 GameControllerState 를
-'움직여도 되나(locomotion)', 'active play(공 접촉/킥) 해도 되나(active)' 두 bool 로 환산.
-
-알 수 없음(UNKNOWN/미주입)은 (None, None) — 단독 비전 테스트에서 막지 않도록 permissive.
-제어 FSM 이 None 을 '제약 없음'으로 해석할지 보수적으로 볼지는 제어쪽 정책.
-"""
+상태는 GameController나 상위 로직에서 전달받는다. UNKNOWN이면 (None, None)을
+반환하므로, 이를 허용으로 처리할지는 호출하는 제어 로직이 결정해야 한다."""
 
 from typing import Optional, Tuple
 

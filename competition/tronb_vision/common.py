@@ -1,11 +1,8 @@
 from __future__ import annotations
-"""
-common.py — 공유 타입/설정/헬퍼.
+"""인식과 제어에서 공유하는 타입, 설정과 보조 함수.
 
-기준: v8.2의 타입 구성 + v6의 BallObservation/RobotState 계약.
-하나의 진실: BallObservation 은 vision 이 한 번에 쓰고 control 이 한 번에 읽는 atomic 단위.
-RobotState 는 control FSM 의 유일한 상태(=app.BallFollower.state).
-"""
+BallObservation은 인식 스레드가 갱신하고 제어 스레드가 읽는 관측 단위다.
+RobotState는 BallFollower의 동작 상태를 나타낸다."""
 
 import math
 import time
@@ -47,18 +44,18 @@ class OperationMode(Enum):
 
 
 class RobotState(Enum):
-    """Control FSM. v9/v10 계열의 compact 상태셋 (구버전 BACK_OFF/BLIND 제거)."""
+    """BallFollower의 동작 상태."""
     SEARCH = auto()
     TRACK = auto()
     APPROACH = auto()
-    AIM = auto()       # 정지 + 골 정렬 + 킥판정 (구 STOP/ALIGN_GOAL 통합)
+    AIM = auto()       # 정지, 골 정렬과 킥 판정
     KICK = auto()
     COOLDOWN = auto()
     RECOVER = auto()
 
 
 class GameControllerState(Enum):
-    """RoboCup GameController 상태 (§7.1). comms 모듈이 채우고 control 이 게이팅에 사용."""
+    """통신 모듈이 전달하는 경기 상태. 제어부의 이동·킥 허용 조건으로 쓴다."""
     UNKNOWN = auto()
     INITIAL = auto()
     READY = auto()
@@ -90,7 +87,7 @@ class TriState(Enum):
 # 관측 / 검출
 @dataclass
 class BallObservation:
-    """Vision 이 한 번에 쓰고 Control 이 한 번에 읽는 atomic 단위 (v6 계약 보존)."""
+    """인식 스레드에서 갱신한 뒤 제어 스레드에 통째로 전달하는 관측값."""
     area: float = 0.0
     dist: float = 9.99
     dist_from_area: float = 9.99
@@ -108,7 +105,7 @@ class BallObservation:
 
     @property
     def confidence(self) -> float:
-        """vision_state.py(제어팀) 호환 별칭. 내부 필드는 conf."""
+        """vision_state에서 사용하는 conf의 별칭."""
         return self.conf
 
 
@@ -144,7 +141,7 @@ class TuningParams:
     align_turn_speed: float = 0.08
     kick_settle_time: float = 0.30
     kick_speed: float = 0.80
-    # AIM (기억 우선 + 짧은 글랜스 + 직진 폴백)
+    # AIM: 골 방향 기억을 먼저 사용하고, 잠깐 확인한 뒤 직진으로 대체
     aim_settle_time: float = 0.25
     aim_glance_time: float = 1.2
     aim_timeout: float = 2.5
@@ -192,9 +189,7 @@ class RobotConfig:
     imgsz: int = 640
     conf_thres: float = 0.35
     iou_thres: float = 0.45
-    # 클래스: 이름 기반 해석이 우선. 아래 id는 폴백.
-    # 모델 클래스 (best.onnx 기준 9개, id 순서 고정). 재학습으로 순서 바뀌면 여기만 수정.
-    # ※ 실제로는 detector 가 onnx 내장 names 를 우선 사용하므로 이건 참조/폴백용.
+    # 모델의 names 메타데이터를 우선 사용한다. 아래 이름과 ID는 정보가 없을 때 쓴다.
     class_names: List[str] = field(default_factory=lambda: [
         "ball", "corner_arc", "goal", "goal_bar",
         "line_l", "line_t", "line_x", "penalty_mark", "robot",
@@ -294,15 +289,14 @@ class RobotConfig:
     restart_type: Optional[str] = None
     restart_owner: Optional[str] = None
     attack_positive_x: bool = True
-    # PF 에 넣을 랜드마크 타입(이 필드 모델 기준 신뢰 가능한 것만). center/goalpost 제외.
-    # 골 설치+모델 개선되면 ("L","T","goalpost") 등으로 확장.
+    # 위치추정에 사용할 랜드마크 타입. 현장 탐지 성능에 맞춰 제한한다.
     loc_landmark_classes: tuple = ("L", "T", "X", "corner_arc", "penalty_mark", "goalpost")
     # 하프코트(노트북+카메라 벤치): 존재하는 절반만 맵으로 → 대칭 모호성 제거.
     # x_pos(골 +x 절반, 기본) / x_neg / full(대회 전체)
     loc_field_mode: str = "x_pos"
     # PF 초기 분포: uniform(맵 범위 전체 균일, 어디서 시작하든) / own_half / 코드에서 seed
     loc_init_mode: str = "uniform"
-    # 시뮬 (MuJoCo scene 의 정확한 이름. 네 xml 에 맞춰 여기만 바꾸면 됨)
+    # MuJoCo scene XML에 정의된 관절·카메라·물체 이름
     step_mujoco_physics: bool = True
     sim_robot_joint: str = "free"            # 로봇 floating base freejoint
     sim_neck_yaw_joint: str = "neck_yaw"
@@ -387,7 +381,6 @@ def check_model_and_backend(cfg, source_kind: str):
     if mp.endswith(".onnx") and cfg.detector_backend in ("pt", "ultralytics"):
         cfg.detector_backend = "onnx"
         print(f"[check] '{mp}' 는 .onnx 라 backend 를 onnx 로 자동 변경")
-    # 존재 확인
     if not _os.path.exists(mp):
         raise SystemExit(
             f"[ERROR] 모델 파일 없음: {mp}\n"

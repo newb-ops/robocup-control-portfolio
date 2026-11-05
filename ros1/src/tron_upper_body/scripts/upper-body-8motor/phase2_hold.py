@@ -21,11 +21,11 @@ ID_NAME = {
     7: "elbow_L", 8: "elbow_R",
 }
 
-# 모터별 테스트 Kp (낮게 시작 — Phase 3 의 1/4 수준)
+# 모터별 hold 시험 Kp
 TEST_KP = {
     1: 3.0, 2: 3.0,
     3: 3.0, 4: 3.0,
-    5: 3.0, 6: 4.0,    # head 는 중력 받아서 살짝 더
+    5: 3.0, 6: 4.0,    # 목 pitch는 중력 부하를 고려해 Kp를 높임
     7: 3.0, 8: 3.0,
 }
 TEST_KD = 0.5
@@ -67,7 +67,7 @@ class Phase2Hold:
         self.pub.publish(cmd)
 
     def _release_all(self):
-        """모든 모터 Kp=0, Kd=0.1 으로 풀기 (약한 댐핑만)."""
+        """모든 모터의 위치 제어를 끄고 Kd=0.1의 감쇠만 남긴다."""
         for _ in range(30):
             for mid in ALL_IDS:
                 self._send(mid, 0.0, kp=0.0, kd=0.1)

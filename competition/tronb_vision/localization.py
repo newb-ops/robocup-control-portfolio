@@ -1,22 +1,10 @@
 from __future__ import annotations
-"""
-localization.py — compact MCL (기준: v6 ParticleFilter + trust/spread).
-v10.3 patch: center_mark / penalty_mark / corner_arc 직접 지원.
+"""필드 랜드마크를 이용한 파티클 필터 위치추정.
 
-기본 OFF. 켜기 전 필수(아직 미해결):
-  - 카메라 자세 입력: set_pose_matrices(head/IMU) 를 매 프레임 줘야 pixel_to_floor 정확 (주의 5).
-  - 초기 시딩: 점대칭 필드라 initial_pose 를 킥오프 자리+IMU heading 으로 박아야 함 (주의 4).
-신뢰 판단은 confidence(ESS) 가 아니라 spread + 관측 랜드마크 수 (trust). (주의 2/3)
-
-[patch 변경점]
-- SUPPORTED_OBS_TYPES: 기존 4종 + center_mark / penalty_mark / corner_arc
-- YOLO_CLS_TO_OBS_TYPE: class name → obs_type 변환 dict (app._landmark_obs 에서 사용)
-- FieldMap._default: penalty_mark / corner_arc 를 X/L 에서 분리해 전용 type 으로 등록
-- FieldMap.__init__: _by_type 캐시를 7종으로 확장
-- ParticleFilter.sigma / md: 신형 3종 기본값 추가
-- ParticleFilter.update: md 계산을 obs_type 별로 확장 (L/T tight, 나머지 기본)
-- Observation 필드명/인터페이스 변경 없음 (rx, ry 유지)
-"""
+기본 설정에서는 비활성화되어 있다. CoordinateTransform 경로는 매 프레임
+set_pose_matrices로 head/IMU 자세를 갱신해야 하지만 현재 연결되어 있지 않다.
+대칭 필드에서는 초기 위치와 방향을 구분할 정보가 필요하다.
+추정 신뢰도는 ESS가 아닌 파티클 분산, 관측 수와 시간적 안정성으로 판단한다."""
 
 import math
 from collections import deque
@@ -102,7 +90,6 @@ class FieldMap:
         else:
             self.landmarks = all_lm
             self.x_lo, self.x_hi = -half_len, half_len
-        # 7종으로 캐시 확장
         self._by_type = {}
         for t in SUPPORTED_OBS_TYPES:
             arr = np.array([[l.x, l.y] for l in self.landmarks if l.ltype == t], dtype=float)
@@ -110,10 +97,9 @@ class FieldMap:
 
     @staticmethod
     def _default(L, W) -> List[Landmark]:
-        """M-Field 랜드마크 — 검증된 params.yaml 과 동일 좌표로 통일.
-        (이전 하드코드가 T/X/L 을 실제 필드와 다르게 만들어 위치추정이 틀렸음 → 수정.)
-        원점=정중앙, +x=오른쪽 골, +y=위 사이드라인.
-        corner_arc / penalty_mark 는 params.yaml 엔 없지만 신형 모델 클래스라 추가."""
+        """M-Field 랜드마크 좌표.
+        원점은 필드 중앙, +x는 오른쪽 골, +y는 위쪽 사이드라인이다.
+        corner_arc와 penalty_mark는 별도 관측 타입으로 구분한다."""
         out: List[Landmark] = []
 
         # L (8) : 박스 안쪽 직각 코너만. 외곽 코너는 corner_arc, 골라인 교차는 T (MAP 기준).
@@ -132,7 +118,7 @@ class FieldMap:
             out.append(Landmark(sx * 7.0,  2.0, "T"))   # 골에어리어 골라인 T
             out.append(Landmark(sx * 7.0, -2.0, "T"))
 
-        # X (2) : 센터서클이 센터라인과 만나는 위/아래 교차 (MAP 의 보라 박스 = (0,±1.5)).
+        # X (2): 센터서클과 센터라인의 교차점 (0, ±1.5 m)
         out.append(Landmark(0.0,  1.5, "X"))
         out.append(Landmark(0.0, -1.5, "X"))
 
@@ -141,12 +127,12 @@ class FieldMap:
             out.append(Landmark(sx * 7.0,  1.25, "goalpost"))
             out.append(Landmark(sx * 7.0, -1.25, "goalpost"))
 
-        # corner_arc (4) : 외곽 코너에 위치 (신형 모델 클래스)
+        # corner_arc (4): 필드 외곽 코너
         for sx in (-1, 1):
             out.append(Landmark(sx * 7.0,  4.5, "corner_arc"))
             out.append(Landmark(sx * 7.0, -4.5, "corner_arc"))
 
-        # penalty_mark (2) : 골라인에서 2m (신형 모델 클래스)
+        # penalty_mark (2): 골라인에서 2 m
         out.append(Landmark( 5.0, 0.0, "penalty_mark"))
         out.append(Landmark(-5.0, 0.0, "penalty_mark"))
 
@@ -169,12 +155,12 @@ _SIGMA: Dict[str, float] = {
     "T":            0.40,
     "X":            0.45,
     "goalpost":     0.35,
-    "center_mark":  0.30,   # 위치 확실, tight
+    "center_mark":  0.30,   # 위치 오차 표준편차 (m)
     "penalty_mark": 0.30,
     "corner_arc":   0.35,
 }
 _MATCH_DIST: Dict[str, float] = {
-    "L":            1.50,   # params.yaml 과 통일 (0.5 는 투영노이즈에 너무 타이트 → 초기수렴 불가)
+    "L":            1.50,   # 투영 노이즈를 고려한 매칭 거리 (m)
     "T":            1.00,
     "X":            1.00,
     "goalpost":     1.50,
@@ -197,9 +183,7 @@ class ParticleFilter:
             self.match_dist["T"] = lt_max_match_dist
         self.p = np.zeros((n, 3))
         self.w = np.ones(n) / n
-        # 연속성/회복 안정화 상태 (검증된 독립 PF 에서 이식).
-        # _tracking: spread 가 작아져 '수렴됨' 으로 판단된 뒤에만 연속성 패널티 적용
-        # (uniform global 시작이라 수렴 전엔 패널티 끄고 자유 탐색 → 어디서든 수렴 가능).
+        # 수렴 전에는 전체 필드를 탐색한다. 수렴 후에만 위치·방향 급변에 패널티를 준다.
         self.prev_est = None
         self._tracking = False
         self._last_dx = 0.0
@@ -220,7 +204,7 @@ class ParticleFilter:
         self.w[:] = 1.0 / self.n
 
     def reset_uniform(self):
-        """필드 전체 + 모든 방향으로 균일 분포 (어디서 시작하든 추정 — global localization)."""
+        """필드 전체와 모든 방향에 파티클을 균일하게 분포시킨다."""
         self.p[:, 0] = np.random.uniform(self.fm.x_lo, self.fm.x_hi, self.n)
         self.p[:, 1] = np.random.uniform(-self.fm.half_wid, self.fm.half_wid, self.n)
         self.p[:, 2] = np.random.uniform(-math.pi, math.pi, self.n)
@@ -259,8 +243,7 @@ class ParticleFilter:
             sig = self.sigma.get(o.obs_type, 0.35)
             md  = self.match_dist.get(o.obs_type, 1.00)
             logw += np.where(d < md, -0.5 * (d / sig) ** 2, -30.0)
-        # 연속성 안정화 (수렴 후에만; global 탐색 중엔 미적용)
-        # 독립 PF 에서 이식: 대칭 뒤집힘·위치 점프 억제. _tracking=False 면 영향 없음.
+        # 수렴 후에는 대칭 위치로 뒤집히거나 갑자기 이동하는 추정을 억제한다.
         if self._tracking and self.prev_est is not None:
             px, py, pth = self.prev_est
             dth = (self.p[:, 2] - pth + np.pi) % (2 * np.pi) - np.pi
@@ -279,17 +262,16 @@ class ParticleFilter:
         pos = (np.arange(self.n) + np.random.uniform()) / self.n
         idx = np.clip(np.searchsorted(np.cumsum(self.w), pos), 0, self.n - 1)
         self.p = self.p[idx].copy()
-        # 다양성 주입: 일부 파티클을 필드 전역 랜덤으로 교체 → 가짜 모드 조기 collapse 방지.
-        # 수렴(_tracking) 후엔 비율을 step() 에서 크게 낮춰, 멀/적은 랜드마크일 때
-        # 랜덤 파티클이 weight 잡아 spread 출렁(=GPS 점프 느낌)이는 것을 억제.
+        # 잘못된 위치에 조기 수렴하지 않도록 일부 파티클을 필드 전역에 다시 뿌린다.
+        # 수렴 후에는 step()에서 이 비율을 낮춰 출력 변동을 줄인다.
         k = int(self.n * random_ratio)
         if k > 0:
             ri = np.random.choice(self.n, k, replace=False)
             self.p[ri, 0] = np.random.uniform(self.fm.x_lo, self.fm.x_hi, k)
             self.p[ri, 1] = np.random.uniform(-self.fm.half_wid, self.fm.half_wid, k)
             self.p[ri, 2] = np.random.uniform(-math.pi, math.pi, k)
-        # 납치/완전 발산 회복: ESS<1% 가 '지속'(연속 3프레임) 될 때만. 단발 노이즈로
-        # 텔레포트하지 않도록. 회복도 80% 는 이전추정 근처(σ작게), 20%만 전역.
+        # 단발 노이즈에 재초기화하지 않도록 ESS<1%가 3프레임 이어질 때만 복구한다.
+        # 80%는 이전 추정 주변에, 20%는 필드 전역에 분포시킨다.
         if ess < self.n * 0.01:
             self._lowess_count += 1
         else:
@@ -308,8 +290,7 @@ class ParticleFilter:
         self.w[:] = 1.0 / self.n
 
     def estimate(self):
-        # dominant-cluster 가중평균: posterior 가 multimodal/넓을 때 '모드 사이 중앙'으로
-        # 빠지는 것(center bias)을 막는다. MAP 파티클 주변 1.5m 클러스터만 평균.
+        # 서로 떨어진 후보 사이를 평균내지 않도록 MAP 파티클 주변 1.5 m만 사용한다.
         i_map = int(np.argmax(self.w))
         cx, cy = self.p[i_map, 0], self.p[i_map, 1]
         d = np.hypot(self.p[:, 0] - cx, self.p[:, 1] - cy)
@@ -362,7 +343,7 @@ class LocalizationEngine:
         # 하프코트: 물리적으로 존재하는 절반만 맵에 → 대칭 모호성 제거 (노트북+카메라 벤치).
         field_mode = str(getattr(cfg, "loc_field_mode", "x_pos"))
         self.fm = FieldMap(half_len, half_wid, field_mode=field_mode)
-        # 기본 uniform = 그 절반 전체에 균일 분포 → 절반 안 어디서 시작하든 수렴.
+        # uniform은 설정한 필드 범위 전체에 균일하게 분포한다.
         init_mode = str(getattr(cfg, "loc_init_mode", "uniform"))
         self.pf = ParticleFilter(self.fm, init_mode=init_mode)
         if init_mode == "own_half":
@@ -374,7 +355,7 @@ class LocalizationEngine:
         self._trust_state = False          # trust 히스테리시스(Schmitt) 상태
         self._raw_pose = (0.0, 0.0, 0.0)   # 평활화 전 PF 원추정 (디버그/검증용)
 
-    # 출력 평활화 파라미터 (핸드헬드 카메라: 텔레포트 억제하되 실제 이동은 몇 프레임 내 추종)
+    # 출력의 프레임별 위치 변화 제한과 평활화 계수
     _OUT_EMA = 0.5          # EMA 계수 (클수록 빠르고 덜 부드러움)
     _OUT_MAX_JUMP = 0.8     # 프레임당 허용 위치 변화(m). 초과분은 잘라 점진 추종.
 
@@ -408,7 +389,7 @@ class LocalizationEngine:
         return self.pose
 
     def _smooth_output(self, raw):
-        """PF 원추정에 점프 클램프 + EMA → view 상 뚝뚝 끊김/텔레포트 억제."""
+        """프레임별 위치 변화를 제한하고 EMA로 평활화한다."""
         if self._smoothed is None:
             self._smoothed = raw
             return raw
@@ -459,14 +440,8 @@ class LocalizationEngine:
 
     def reset_pose(self, x: float = 0.0, y: float = 0.0, theta: float = 0.0,
                    n: Optional[int] = None) -> None:
-        """PF를 지정 pose로 수동 초기화한다.
-
-        테스트용 — 로봇을 알고 있는 위치에 세운 뒤 호출해 PF 시딩.
-        나중에 실대회에서는 킥오프 위치 + IMU heading 으로 교체 예정.
-
-        Args:
-            x, y, theta : 필드 좌표계 초기 위치 (m, m, rad). 기본값 (0,0,0) = 필드 중심/정면.
-            n           : 파티클 수 유지. None 이면 현재 pf.n 그대로.
+        """알고 있는 필드 위치 (x, y, theta) 주변으로 PF를 초기화한다.
+        단위는 m, m, rad이며, n=None이면 현재 파티클 수를 유지한다.
         """
         n_particles = n if n is not None else self.pf.n
         self.pf = ParticleFilter(self.fm, n=n_particles, init_pose=(x, y, theta))

@@ -1,11 +1,6 @@
 from __future__ import annotations
-"""
-vision_state.py — 공 인식 state 판단 (제어팀 v6 계약 버전 포팅).
-
-이 모듈은 제어 FSM 이 아니다. 카메라/YOLO/depth/localization 결과를 받아
-'제어 FSM 이 읽기 쉬운 공 인식 라벨'(BallPerceptionState)과 kick 후보 힌트를 만든다.
-출력은 app 이 robot_state["ball_perception_state"] / ["vision_packet"] 등에 기록한다.
-"""
+"""관측값을 제어 FSM에서 읽는 공 인식 상태와 킥 후보 힌트로 바꾼다.
+출력은 app이 robot_state의 ball_perception_state와 vision_packet에 기록한다."""
 from dataclasses import dataclass, asdict
 from enum import Enum, auto
 from typing import Optional, Any, Dict

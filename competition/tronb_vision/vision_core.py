@@ -1,12 +1,8 @@
 from __future__ import annotations
-"""
-vision_core.py — 비전 핵심 (기준: v6 BallFollowerVisionCore + 공용 컴포넌트).
+"""검출 박스에서 공을 추적하고 거리와 골 방향을 추정한다.
 
-VisionCore.process(boxes, depth, img_w, img_h, imu_yaw, head_yaw)
-  -> (BallObservation, goal_data, candidates)
-검출 결과 → 공 후보 검증 → Kalman → 거리(depth/area) → atomic BallObservation.
-골대는 IMU 기준 world-angle 로 GoalMemory 에 상시 기억.
-"""
+공 후보를 검증한 뒤 Kalman 필터와 깊이·면적 기반 거리 추정을 적용한다.
+골 방향은 IMU 기준 각도로 GoalMemory에 저장한다."""
 
 import math
 import threading
@@ -181,7 +177,7 @@ class BallTracker:
 
 # VisionCore
 class VisionCore:
-    """v6 BallFollowerVisionCore 의 compact 판. mujoco/ROS 의존 없음."""
+    """검출 결과에서 공과 골 관측값을 만든다. MuJoCo와 ROS에 의존하지 않는다."""
     def __init__(self, cfg: RobotConfig, tuning: TuningParams, class_id_map: Optional[dict] = None):
         self.cfg = cfg; self.t = tuning
         self.kalman = BallKalmanFilter()

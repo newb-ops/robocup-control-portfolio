@@ -40,7 +40,7 @@ SET_PLAY_MAP = {
     3: "SET_PLAY_PENALTY_KICK", 4: "SET_PLAY_THROW_IN", 5: "SET_PLAY_GOAL_KICK",
     6: "SET_PLAY_CORNER_KICK",
 }
-# GC GameState → 내 common.GameControllerState 문자열(normalize_game_controller_state 가 흡수)
+# GC의 숫자 상태를 common.GameControllerState 이름으로 변환
 _GAME_STATE_TO_GCS = {0: "INITIAL", 1: "READY", 2: "SET", 3: "PLAYING", 4: "FINISHED"}
 
 
@@ -85,7 +85,7 @@ def parse_gc_packet(data: bytes, our_team_number_field: int, player_number: int)
 
 def build_rgrt_response(team_number_field: int, player_number: int) -> bytes:
     # RoboCupGameControlReturnData: header, version, player, team, message,
-    # pose[3](x,y,theta), ballAge, ball[2](x,y) = 6 floats. (원본 step6 은 7f 로 오타→crash)
+    # pose[3](x,y,theta), ballAge, ball[2](x,y): float 6개
     return struct.pack("<4sBBBB6f", b"RGrt", 4, player_number & 0xFF,
                        team_number_field & 0xFF, 0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0)
 
@@ -106,7 +106,7 @@ def gc_to_robot_state(parsed: Dict[str, Any]) -> Dict[str, Any]:
         "gc_secs_till_unpenalised": parsed["secs_till_unpenalised"],
         "gc_kicking_team": parsed["kicking_team"],
         "gc_secs_remaining": parsed["secs_remaining"],
-        # setplay (4단계 setplay.py 입력): 원본 이름 + setplay.py 가 직접 읽는 정규화 키.
+        # 원본 GC 값과 setplay에서 읽는 정규화 키를 함께 제공한다.
         "setplay_restart_type": set_play_name,
         "setplay_restart_raw": parsed["set_play_raw"],
         "setplay_is_ours": is_ours,

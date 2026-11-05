@@ -1,15 +1,13 @@
-# 상하체 로봇 모델
+# 로봇 모델
 
-TRON1 하체와 상체를 결합한 `SF_TRON1B` 모델 정의를 추렸습니다.
+TRON1 하체와 팀에서 제작한 상체를 결합한 `SF_TRON1B`의 링크·관절 정의입니다. 기구 담당 팀원이 작업한 모델을 제어 구조와 함께 볼 수 있도록 담았습니다.
 
 | 파일 | 내용 |
 |---|---|
-| `SF_TRON1B/urdf/robot.urdf` | 하체 8관절과 상체 8관절을 포함한 링크와 관절 구조 |
-| `SF_TRON1B/xml/robot.xml` | 상하체 결합 모델의 MuJoCo 정의 |
-| `gazebo/controller.yaml` | Gazebo 상체 위치 제어 설정 스냅샷 |
+| [robot.urdf](SF_TRON1B/urdf/robot.urdf) | 하체 8관절과 상체 8관절의 링크·관절 정의 |
+| [robot.xml](SF_TRON1B/xml/robot.xml) | MuJoCo 모델 |
+| [controller.yaml](gazebo/controller.yaml) | Gazebo 상체 위치 제어 설정 |
 
-URDF와 MuJoCo XML은 같은 시기의 하드웨어와 모든 설정이 일치한다고 가정하지 않습니다. Gazebo 제어 설정도 파일에 나열된 관절 기준으로 확인해야 합니다.
+파일마다 작업 시기가 달라 관절 이름과 설정을 각각 확인해야 합니다. 참조하는 STL/OBJ 메시와 강화학습 정책은 포함하지 않았으므로, 이 폴더만으로 시각화나 보행 시뮬레이션을 실행할 수는 없습니다.
 
-참조하는 STL/OBJ 메시가 포함되지 않아 이 파일만으로 시각화와 물리 시뮬레이션을 완전히 실행할 수는 없습니다. 정책 모델도 포함하지 않았으며, 강화학습 보행 완료나 실물 적용의 증거로 제시하지 않습니다.
-
-TRON1 기본 모델의 공식 출처는 [LimX Dynamics robot description](https://github.com/limxdynamics/tron1-robot-description)입니다. 현재 공식 모델은 참고 자료이며 이 프로젝트의 누락 메시와 같은 파일이라고 보장하지 않습니다. 기존 기본 모델의 권리와 출처는 [NOTICE](../NOTICE.md)에 적었습니다.
+TRON1 기본 모델의 출처는 [LimX Dynamics](https://github.com/limxdynamics/tron1-robot-description)입니다. 현재 공식 배포본은 참고할 수 있지만, 이 프로젝트가 참조하는 메시와 동일한 버전인지는 확인이 필요합니다. 라이선스와 수정 범위는 [NOTICE.md](../NOTICE.md)에 적었습니다.

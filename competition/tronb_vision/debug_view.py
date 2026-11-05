@@ -1,5 +1,5 @@
 from __future__ import annotations
-"""debug_view.py — OpenCV 오버레이 (v10.1, UX 개선). cv2 있을 때만."""
+"""OpenCV 영상 위에 탐지 결과와 제어 상태를 표시한다."""
 from typing import Optional
 
 import math

@@ -1,9 +1,6 @@
 from __future__ import annotations
-"""
-features.py — ball_stop 만 유지 (v10.4.2 컴팩트화).
-공 정지/속도 추정. localization 불필요. 입력 없어도 켜면 무에러(빈 관측→기본 snap).
-(이전의 latency/landmark_comp/setplay/telemetry 는 제거됨.)
-"""
+"""로봇 기준 공 위치로 속도와 예상 정지점을 계산한다.
+위치추정 결과는 필요하지 않으며, 관측이 없으면 기본 스냅샷을 반환한다."""
 
 import math
 from collections import deque
@@ -77,9 +74,8 @@ class BallStopEstimator:
         return BallMotionSnap(moving=True, speed=sp, local_x=x1, local_y=y1, stop_x=sx, stop_y=sy, eta=eta)
 
 
-# robot_state 훅 (제어 FSM 계약)
 def attach_ball_stop_to_robot_state(robot_state: dict, motion: "BallMotionSnap") -> None:
-    """ball_stop 결과를 robot_state 에 기록. setplay/제어 FSM 이 공 이동 판단에 사용."""
+    """세트플레이와 제어 FSM에서 사용할 공 이동 상태를 기록한다."""
     if motion is None:
         robot_state["ball_stop_status"] = "UNKNOWN"
         robot_state["ball_stop_reason"] = "no motion snapshot"

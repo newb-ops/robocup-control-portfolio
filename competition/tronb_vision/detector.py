@@ -1,13 +1,8 @@
 from __future__ import annotations
-"""
-detector.py — 검출기 추상화 (기준: v8.2 OnnxYoloDetector).
+"""ONNX, Ultralytics와 테스트용 검출기를 같은 박스 인터페이스로 제공한다.
 
-핵심:
-- BaseDetector.predict_boxes(rgb) -> DetectionBoxes  (box.cls/.conf/.xywh/.xyxy 제공)
-  → vision_core 가 ultralytics/onnx 구분 없이 같은 코드로 처리.
-- 클래스 id는 '이름' 으로 해석 (resolve_class_ids). 모델마다 학습 순서가 달라도 동작.
-- DummyDetector: mujoco/onnx 없이 selftest/headless 실행용.
-"""
+클래스 ID는 모델에 저장된 이름으로 찾는다. DummyDetector는 모델 없이
+합성 검출 결과를 반환한다."""
 
 import importlib
 import math
@@ -132,8 +127,8 @@ class BaseDetector:
 
 
 class DummyDetector(BaseDetector):
-    """mujoco/onnx 없이 도는 합성 검출기. selftest/headless 전용.
-    선택적으로 scripted 박스 시퀀스를 주입해 FSM 전이를 결정적으로 테스트."""
+    """합성 검출 결과를 반환하는 테스트용 검출기.
+    scripted에 박스 시퀀스를 주면 같은 입력으로 FSM 전이를 재현할 수 있다."""
     def __init__(self, class_names: Sequence[str] = (), scripted=None):
         self.names = {i: n for i, n in enumerate(class_names)}
         self._scripted = list(scripted) if scripted else None
@@ -147,7 +142,7 @@ class DummyDetector(BaseDetector):
 
 
 class OnnxYoloDetector(BaseDetector):
-    """YOLO ONNX (v8.2 구현 기준). v8/v5 raw 및 NMS-포함 출력 모두 파싱."""
+    """YOLOv5/v8 원시 출력과 NMS를 포함한 ONNX 출력을 파싱한다."""
     def __init__(self, model_path: str, class_names: Sequence[str], imgsz: int = 640,
                  conf_thres: float = 0.35, iou_thres: float = 0.45,
                  providers: Optional[List[str]] = None):
@@ -158,9 +153,7 @@ class OnnxYoloDetector(BaseDetector):
             providers = [p for p in preferred if p in avail] or avail
         self.session = ort.InferenceSession(model_path, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
-        # 클래스명: onnx 메타데이터(names)를 최우선 사용
-        # Ultralytics export 는 custom_metadata_map['names'] 에 {id:name} 을 저장한다.
-        # 이걸 무시하고 cfg.class_names 를 쓰면 모델과 어긋나 라벨/obs_type 이 통째로 밀린다.
+        # 모델과 설정의 클래스 순서가 다를 수 있어 ONNX names 메타데이터를 우선한다.
         meta_names = self._read_meta_names()
         if meta_names:
             self._names_list = [meta_names[i] for i in sorted(meta_names)]
